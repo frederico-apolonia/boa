@@ -7,6 +7,8 @@ const int MAX_SCANS = 10;
 const int SCAN_TIME = 900; //ms
 const int TIME_BETWEEN_SCANS = 100;
 const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
+const int MAX_PAYLOAD_DEVICES = 32;
+const int BUFFER_DEVICE_SIZE_BYTES = 16;
 const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
 const int NULL_RSSI = 255;
@@ -20,7 +22,7 @@ JsonObject bleScanObject;
  // BLE Scanner Service
 BLEService scannerService("52708A74-5148-4C5C-AB81-B7C83C80EC94");
 // BLE Scanner id Characteristic indicates the scanner id, can be changed by gateways
-BLEShortCharacteristic scannerIdCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC90", BLERead | BLEWrite);
+/*BLEShortCharacteristic scannerIdCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC90", BLERead | BLEWrite);*/
 /* Max size of this characteristic is 512 bytes, but the size isn't fixed.
  * Per MAC rssi, the vector is as follows:
  * [<MACADDRESS[6 bytes]>, <[<RSSI[1 byte ea]>]>]
@@ -49,7 +51,7 @@ void setup()
     deviceName.toCharArray(nameBuffer, deviceName.length());
     BLE.setLocalName(nameBuffer);
 
-    scannerService.addCharacteristic(scannerIdCharacteristic);
+    /*scannerService.addCharacteristic(scannerIdCharacteristic);*/
     scannerService.addCharacteristic(scannerNotifyCharacteristic);
     
     BLE.setAdvertisedService(scannerService);
@@ -86,16 +88,19 @@ void scannerNotifyCharacteristicSubscribed(BLEDevice central, BLECharacteristic 
     Serial.println("New central device subscribed to the characteristic.");
     Serial.println("Going to prepare and send the values");
 
-    // TODO: adjust to send max 32 devices at a time
     JsonObject rssisObject = bleScans.as<JsonObject>();
     int numDevices = rssisObject.size();
-    const int bufferSize = numDevices * 16;
+    int numRemainDevices = numDevices;
+    int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
+    int currBuffSize = currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES;
+    numRemainDevices -= currBuffNumDevices;
     // create buffer
-    byte buffer[bufferSize];
+    byte buffer[currBuffSize];
     int bufferPos = 0;
 
     int startingRssiBytes;
     for (JsonPair scannedDevice : rssisObject) {
+        /* Add current device to buffer */
         JsonArray rssis = bleScans[scannedDevice.key().c_str()];
 
         const char* macAddress = scannedDevice.key().c_str();
@@ -114,8 +119,25 @@ void scannerNotifyCharacteristicSubscribed(BLEDevice central, BLECharacteristic 
             buffer[bufferPos] = (byte) NULL_RSSI;
             bufferPos++;
         }
+
+        /* Check if we've reached the maximum bufferSize */
+        if (bufferPos == currBuffSize) {
+            Serial.println("Writing value to characteristic...");
+            /* if so, we write the buffer on the characteristic */
+            scannerNotifyCharacteristic.writeValue(buffer, bufferPos);
+
+            currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
+            currBuffSize = currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES;
+            numRemainDevices -= currBuffNumDevices;
+
+            byte buffer[currBuffSize];
+            bufferPos = 0;
+        }
     }
-    scannerNotifyCharacteristic.writeValue(buffer, bufferPos);
+
+    // after sending all devices, write empty array into characteristic
+    byte emptyArray[1];
+    scannerNotifyCharacteristic.writeValue(emptyArray, 0);
 }
 
 void loop() {
