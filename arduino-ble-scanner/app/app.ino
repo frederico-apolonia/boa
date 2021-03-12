@@ -7,7 +7,7 @@ const int MAX_SCANS = 10;
 const int SCAN_TIME = 900; //ms
 const int TIME_BETWEEN_SCANS = 100;
 const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
-const int MAX_PAYLOAD_DEVICES = 32;
+const int MAX_PAYLOAD_DEVICES = 31;
 const int BUFFER_DEVICE_SIZE_BYTES = 16;
 const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
@@ -22,7 +22,7 @@ JsonObject bleScanObject;
  // BLE Scanner Service
 BLEService scannerService("52708A74-5148-4C5C-AB81-B7C83C80EC94");
 // BLE Scanner id Characteristic indicates the scanner id, can be changed by gateways
-/*BLEShortCharacteristic scannerIdCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC90", BLERead | BLEWrite);*/
+BLEShortCharacteristic scannerIdCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC90", BLERead);
 /* Max size of this characteristic is 512 bytes, but the size isn't fixed.
  * Per MAC rssi, the vector is as follows:
  * [<MACADDRESS[6 bytes]>, <[<RSSI[1 byte ea]>]>]
@@ -30,7 +30,7 @@ BLEService scannerService("52708A74-5148-4C5C-AB81-B7C83C80EC94");
  */
 BLECharacteristic scannerNotifyCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC91", BLERead | BLENotify, 512, false);
 
-const int SCANNER_ID = 0;
+const short SCANNER_ID = 1;
 
 void setup()
 {
@@ -41,17 +41,25 @@ void setup()
     // initialize LED to visually indicate the scan
     pinMode(LED_BUILTIN, OUTPUT);
 
+    initializeBle();
+}
+
+void initializeBle() {
+    //BLE.end();
     // start BLE
     if (!BLE.begin()) {
         Serial.println("Couldn't start BLE.");
         while(1);
     }
-    String deviceName = "SATO-BLE-SCANNER-" + String(SCANNER_ID);
-    char nameBuffer[deviceName.length()];
-    deviceName.toCharArray(nameBuffer, deviceName.length());
-    BLE.setLocalName(nameBuffer);
+    char* deviceName = "SATO-SCANNER-1";
+    /*String deviceName = "SATO-SCANNER-1";
+    deviceName.concat(SCANNER_ID);
+    Serial.println(deviceName);
+    char nameBuffer[deviceName.length() + 1];
+    deviceName.toCharArray(nameBuffer, deviceName.length());*/
+    BLE.setLocalName(deviceName);
 
-    /*scannerService.addCharacteristic(scannerIdCharacteristic);*/
+    scannerService.addCharacteristic(scannerIdCharacteristic);
     scannerService.addCharacteristic(scannerNotifyCharacteristic);
     
     BLE.setAdvertisedService(scannerService);
@@ -59,11 +67,12 @@ void setup()
     BLE.addService(scannerService);
 
     scannerNotifyCharacteristic.setEventHandler(BLESubscribed, scannerNotifyCharacteristicSubscribed);
-    // TODO: missing event handlers for scannerID characteristic
+    scannerIdCharacteristic.writeValue(SCANNER_ID);
 
-    BLE.advertise();
+    //BLE.advertise();
     Serial.println("BLE Scanner active, waiting for gateways...");
 }
+
 
 /* Convert string seperated by sep to bytes and save it on buffer.
  * Offset indicates the first position of buffer to write the data; 
@@ -90,13 +99,23 @@ void scannerNotifyCharacteristicSubscribed(BLEDevice central, BLECharacteristic 
 
     JsonObject rssisObject = bleScans.as<JsonObject>();
     int numDevices = rssisObject.size();
+    Serial.println("DEBUG: Number of devices to send:");
+    Serial.println(numDevices);
     int numRemainDevices = numDevices;
+    /* need to take into consideration the Scanner ID */
     int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-    int currBuffSize = currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES;
+    int currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
+    if (currBuffNumDevices == numRemainDevices) {
+        currBuffSize += 1;
+    }
     numRemainDevices -= currBuffNumDevices;
     // create buffer
+    Serial.println("DEBUG: Buffer size:");
+    Serial.println(currBuffSize);
     byte buffer[currBuffSize];
     int bufferPos = 0;
+    buffer[bufferPos] = (byte) SCANNER_ID;
+    bufferPos++;
 
     int startingRssiBytes;
     for (JsonPair scannedDevice : rssisObject) {
@@ -121,13 +140,22 @@ void scannerNotifyCharacteristicSubscribed(BLEDevice central, BLECharacteristic 
         }
 
         /* Check if we've reached the maximum bufferSize */
+        Serial.println("Debug: Buffer occupied:");
+        Serial.println(bufferPos);
+        if (bufferPos + 1 == currBuffSize) {
+            buffer[bufferPos] = (byte) '$';
+            bufferPos++;
+        }
         if (bufferPos == currBuffSize) {
             Serial.println("Writing value to characteristic...");
             /* if so, we write the buffer on the characteristic */
             scannerNotifyCharacteristic.writeValue(buffer, bufferPos);
 
             currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-            currBuffSize = currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES;
+            currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
+            if (currBuffNumDevices == numRemainDevices) {
+                currBuffSize += 1;
+            }
             numRemainDevices -= currBuffNumDevices;
 
             byte buffer[currBuffSize];
@@ -164,7 +192,18 @@ void loop() {
                     Serial.println("Scanning ended");
                 }
             } else {
+                // reset ble
+                /*BLE.end();
+                delay(5000);
+                BLE.begin();*/
                 Serial.println("Leaving scanning mode.");
+                delay(10000);
+                while(!BLE.advertise()) {
+                    BLE.stopAdvertise();
+                    Serial.println("Failed to activate BLE Advertise");
+                    delay(1500);
+                    Serial.println("Retrying the BLE Advertise");
+                }
                 scanning = false;
             }
         } else {
@@ -175,6 +214,7 @@ void loop() {
                 numScans = 1;
                 // need to clear previous findings
                 bleScans.clear();
+                BLE.stopAdvertise();
             }
         }
     }
@@ -184,12 +224,20 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     digitalWrite(LED_BUILTIN, HIGH);
     long startingTime = millis();
 
-    BLE.scan();
+    delay(1000);
+    while(!BLE.scan()) {
+        BLE.stopScan();
+        Serial.println("Failed to activate BLE scan");
+        delay(5000);
+        Serial.println("Retrying BLE Scan");
+    }
     BLEDevice peripheral;
     while(millis() - startingTime < timeLimitMs) {
         peripheral = BLE.available();
         if(peripheral) {
-            /* Ignore gateways when scanning */
+            /* TODO: Ignore gateways when scanning with gateway bluetooth name */
+
+            Serial.println(peripheral.address());
 
             if (!gateways.containsKey(peripheral.address())) {
                 if (!bleScans.containsKey(peripheral.address())) {
