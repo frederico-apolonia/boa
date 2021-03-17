@@ -1,171 +1,79 @@
 #include <Arduino.h>
-
 #include <ArduinoBLE.h>
 #include <ArduinoJson.h>
+
+#include "sato_lib.h"
+
+const short SCANNER_ID = 1;
 
 const int MAX_SCANS = 10;
 const int SCAN_TIME = 900; //ms
 const int TIME_BETWEEN_SCANS = 100;
 const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
-const int MAX_PAYLOAD_DEVICES = 31;
+const int MAX_PAYLOAD_DEVICES = 15;
 const int BUFFER_DEVICE_SIZE_BYTES = 16;
 const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
 const int NULL_RSSI = 255;
 
-/* Json to store gateway macs */
-StaticJsonDocument<512> gateways;
+resetFunc();
+
+const char* GATEWAY_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
+
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
 JsonObject bleScanObject;
 
- // BLE Scanner Service
-BLEService scannerService("52708A74-5148-4C5C-AB81-B7C83C80EC94");
-// BLE Scanner id Characteristic indicates the scanner id, can be changed by gateways
-BLEShortCharacteristic scannerIdCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC90", BLERead);
-/* Max size of this characteristic is 512 bytes, but the size isn't fixed.
- * Per MAC rssi, the vector is as follows:
- * [<MACADDRESS[6 bytes]>, <[<RSSI[1 byte ea]>]>]
- * This gives 16 bytes per device and a max of 32 devices per message
- */
-BLECharacteristic scannerNotifyCharacteristic("52708A74-5148-4C5C-AB80-B7C83C80EC91", BLERead | BLENotify, 512, false);
+void setup() {
 
-const short SCANNER_ID = 1;
-
-void setup()
-{
-    // transmit at 9600 bits/s
+    /* NOTE: Remove/Comment when deploying
+     * transmit at 9600 bps
+     */
     Serial.begin(9600);
     while(!Serial);
 
     // initialize LED to visually indicate the scan
     pinMode(LED_BUILTIN, OUTPUT);
 
-    initializeBle();
-}
-
-void initializeBle() {
-    //BLE.end();
-    // start BLE
     if (!BLE.begin()) {
+        // TODO: Add blinking function to indicate Arduino malfunction
         Serial.println("Couldn't start BLE.");
         while(1);
     }
+
     char* deviceName = "SATO-SCANNER-1";
-    /*String deviceName = "SATO-SCANNER-1";
-    deviceName.concat(SCANNER_ID);
-    Serial.println(deviceName);
-    char nameBuffer[deviceName.length() + 1];
-    deviceName.toCharArray(nameBuffer, deviceName.length());*/
     BLE.setLocalName(deviceName);
-
-    scannerService.addCharacteristic(scannerIdCharacteristic);
-    scannerService.addCharacteristic(scannerNotifyCharacteristic);
-    
-    BLE.setAdvertisedService(scannerService);
-    // add the service
-    BLE.addService(scannerService);
-
-    scannerNotifyCharacteristic.setEventHandler(BLESubscribed, scannerNotifyCharacteristicSubscribed);
-    scannerIdCharacteristic.writeValue(SCANNER_ID);
-
-    //BLE.advertise();
-    Serial.println("BLE Scanner active, waiting for gateways...");
 }
 
+void scanBLEDevices(int timeLimitMs, int maxArraySize) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    long startingTime = millis();
 
-/* Convert string seperated by sep to bytes and save it on buffer.
- * Offset indicates the first position of buffer to write the data; 
- * requires buffer + maxBytes < buffer length
- */
-void parseBytes(const char* str, char sep, byte* buffer, int maxBytes, int base, int offset=0) {
-    for (int i = offset; i < offset + maxBytes; i++) {
-        buffer[i] = strtoul(str, NULL, base);  // Convert byte
-        str = strchr(str, sep);               // Find next separator
-        if (str == NULL || *str == '\0') {
-            break;                            // No more separators, exit
-        }
-        str++;                                // Point to next character after separator
+    while(!BLE.scan()) {
+        // TODO: Add blinking function to indicate Arduino malfunction with max retries
+        BLE.stopScan();
+        Serial.println("Failed to activate BLE scan");
+        delay(750);
+        Serial.println("Retrying BLE Scan");
     }
-}
+    BLEDevice peripheral;
+    while(millis() - startingTime < timeLimitMs) {
+        peripheral = BLE.available();
+        if(peripheral) {
+            // filter gateways
+            if (peripheral.localName().indexOf("SATO-GATEWAY") < 0) {
+                if (!bleScans.containsKey(peripheral.address())) {
+                    bleScans.createNestedArray(peripheral.address());
+                }
 
-/* Handler for when the characteristic is subscribed. When RSSI Values is subscribed, it's
- * expected that the arduino will now serialize and send all the device values via
- * notification to subscribed device.
- */
-void scannerNotifyCharacteristicSubscribed(BLEDevice central, BLECharacteristic characteristic) {
-    Serial.println("New central device subscribed to the characteristic.");
-    Serial.println("Going to prepare and send the values");
-
-    JsonObject rssisObject = bleScans.as<JsonObject>();
-    int numDevices = rssisObject.size();
-    Serial.println("DEBUG: Number of devices to send:");
-    Serial.println(numDevices);
-    int numRemainDevices = numDevices;
-    /* need to take into consideration the Scanner ID */
-    int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-    int currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
-    if (currBuffNumDevices == numRemainDevices) {
-        currBuffSize += 1;
-    }
-    numRemainDevices -= currBuffNumDevices;
-    // create buffer
-    Serial.println("DEBUG: Buffer size:");
-    Serial.println(currBuffSize);
-    byte buffer[currBuffSize];
-    int bufferPos = 0;
-    buffer[bufferPos] = (byte) SCANNER_ID;
-    bufferPos++;
-
-    int startingRssiBytes;
-    for (JsonPair scannedDevice : rssisObject) {
-        /* Add current device to buffer */
-        JsonArray rssis = bleScans[scannedDevice.key().c_str()];
-
-        const char* macAddress = scannedDevice.key().c_str();
-        /* write MAC Address on buffer */
-        parseBytes(macAddress, ':', buffer, MAC_ADDRESS_SIZE_BYTES, MAC_ADDRESS_BASE, bufferPos);
-        bufferPos += MAC_ADDRESS_SIZE_BYTES;
-
-        startingRssiBytes = bufferPos;
-        /* write RSSIs from MAC Address on buffer */
-        for(JsonVariant v : rssis) { 
-            buffer[bufferPos] = (byte) abs(v.as<int>());
-            bufferPos++;
-        }
-
-        while (bufferPos - startingRssiBytes != 10) {
-            buffer[bufferPos] = (byte) NULL_RSSI;
-            bufferPos++;
-        }
-
-        /* Check if we've reached the maximum bufferSize */
-        Serial.println("Debug: Buffer occupied:");
-        Serial.println(bufferPos);
-        if (bufferPos + 1 == currBuffSize) {
-            buffer[bufferPos] = (byte) '$';
-            bufferPos++;
-        }
-        if (bufferPos == currBuffSize) {
-            Serial.println("Writing value to characteristic...");
-            /* if so, we write the buffer on the characteristic */
-            scannerNotifyCharacteristic.writeValue(buffer, bufferPos);
-
-            currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-            currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
-            if (currBuffNumDevices == numRemainDevices) {
-                currBuffSize += 1;
+                if (bleScans[peripheral.address()].size() < maxArraySize) {
+                    bleScans[peripheral.address()].add(abs(peripheral.rssi()));
+                }
             }
-            numRemainDevices -= currBuffNumDevices;
-
-            byte buffer[currBuffSize];
-            bufferPos = 0;
         }
     }
-
-    // after sending all devices, write empty array into characteristic
-    byte emptyArray[1];
-    scannerNotifyCharacteristic.writeValue(emptyArray, 0);
+    digitalWrite(LED_BUILTIN, LOW);
+    BLE.stopScan();
 }
 
 void loop() {
@@ -173,6 +81,7 @@ void loop() {
     long lastScanInstant = millis();
     long currentTime;
     bool scanning = true;
+    bool deliveredDevicesToGateway = false;
 
     int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
@@ -192,19 +101,9 @@ void loop() {
                     Serial.println("Scanning ended");
                 }
             } else {
-                // reset ble
-                /*BLE.end();
-                delay(5000);
-                BLE.begin();*/
                 Serial.println("Leaving scanning mode.");
-                delay(10000);
-                while(!BLE.advertise()) {
-                    BLE.stopAdvertise();
-                    Serial.println("Failed to activate BLE Advertise");
-                    delay(1500);
-                    Serial.println("Retrying the BLE Advertise");
-                }
                 scanning = false;
+                deliveredDevicesToGateway = false;
             }
         } else {
             if (currentTime - lastScanInstant >= timeBetweenScans) {
@@ -214,44 +113,122 @@ void loop() {
                 numScans = 1;
                 // need to clear previous findings
                 bleScans.clear();
-                BLE.stopAdvertise();
+            } else {
+                if (!deliveredDevicesToGateway) {
+                    while(!BLE.scan()) {
+                        // TODO: Add blinking function to indicate Arduino malfunction with max retries
+                        BLE.stopScan();
+                        Serial.println("Failed to activate BLE scan");
+                        delay(750);
+                        Serial.println("Retrying BLE Scan");
+                    }
+                    deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
+                    Serial.println("Sent all devices to gateway?");
+                    Serial.println(deliveredDevicesToGateway);
+                    // TODO: Sleep remaining time after sending devices
+                }
             }
         }
     }
 }
 
-void scanBLEDevices(int timeLimitMs, int maxArraySize) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    long startingTime = millis();
+bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
+    while(millis() - startingTime <= timeBetweenScans) {
+        BLEDevice peripheral = BLE.available();
 
-    delay(1000);
-    while(!BLE.scan()) {
-        BLE.stopScan();
-        Serial.println("Failed to activate BLE scan");
-        delay(5000);
-        Serial.println("Retrying BLE Scan");
-    }
-    BLEDevice peripheral;
-    while(millis() - startingTime < timeLimitMs) {
-        peripheral = BLE.available();
-        if(peripheral) {
-            /* TODO: Ignore gateways when scanning with gateway bluetooth name */
-
-            Serial.println(peripheral.address());
-
-            if (!gateways.containsKey(peripheral.address())) {
-                if (!bleScans.containsKey(peripheral.address())) {
-                    bleScans.createNestedArray(peripheral.address());
+        if (peripheral) {
+            if (peripheral.localName().indexOf("SATO-GATEWAY") >= 0) {
+                Serial.println("It's a gateway.");
+                // stop scanning
+                BLE.stopScan();
+                if (writeDevicesOnGateway(peripheral)) {
+                    return true;
                 }
-
-                // avoid 2 scans on the same peripheral on the same run
-                if (bleScans[peripheral.address()].size() < maxArraySize) {
-                    bleScans[peripheral.address()].add(abs(peripheral.rssi()));
-                }
+                // peripheral disconnected, start scanning again
+                BLE.scan();
             }
-            
         }
     }
-    digitalWrite(LED_BUILTIN, LOW);
-    BLE.stopScan();
+
+    return false;
+}
+
+bool writeDevicesOnGateway(BLEDevice peripheral) {
+    //Serial.println("Connecting...");
+
+    if (peripheral.connect()) {
+        Serial.println("Connected to peripheral");
+    } else {
+        Serial.println("Failed to connect.");
+        return false;
+    }
+    if (!peripheral.discoverAttributes()) {
+        Serial.println("Couldn't discover gateway characteristics.");
+        peripheral.disconnect();
+        return false;
+    }
+
+    BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_CHAR_UUID);
+
+    if (!writeCharacteristic) {
+        Serial.println("Device doesn't have write char!");
+        peripheral.disconnect();
+        return false;
+    }
+
+    /* ############
+     * Send devices to gateway
+     * ############ */
+    Serial.println("Preparing to send devices to gateway.");
+    JsonObject rssisObject = bleScans.as<JsonObject>();
+    int numDevices = rssisObject.size();
+    Serial.print("Got ");
+    Serial.print(numDevices);
+    Serial.println(" devices to send to gateway.");
+    int numRemainDevices = numDevices;
+
+    int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
+    int currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
+    if (currBuffNumDevices == numRemainDevices) {
+        currBuffSize += 1;
+    }
+    numRemainDevices -= currBuffNumDevices;
+
+    byte buffer[currBuffSize];
+    int bufferPos = 0;
+    buffer[bufferPos] = (byte) SCANNER_ID;
+    bufferPos++;
+    for (JsonPair scannedDevice : rssisObject) {
+        /* Add current device to buffer */
+        JsonArray rssis = bleScans[scannedDevice.key().c_str()];
+        const char* macAddress = scannedDevice.key().c_str();
+
+        if (serializeDevice(macAddress, rssis, buffer, bufferPos)) {
+            bufferPos += 16;
+        }
+
+        /* Check if we've reached the maximum bufferSize */
+        if (bufferPos + 1 == currBuffSize) {
+            buffer[bufferPos] = (byte) '$';
+            bufferPos++;
+        }
+        if (bufferPos == currBuffSize) {
+            Serial.println("Writing value to characteristic...");
+            /* if so, we write the buffer on the characteristic */
+            writeCharacteristic.writeValue(buffer, bufferPos);
+
+            currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
+            currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
+            if (currBuffNumDevices == numRemainDevices) {
+                currBuffSize += 1;
+            }
+            numRemainDevices -= currBuffNumDevices;
+
+            byte buffer[currBuffSize];
+            bufferPos = 0;
+        }
+    }
+    
+    peripheral.disconnect();
+    return true;
 }
