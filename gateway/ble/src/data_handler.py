@@ -2,14 +2,20 @@ from queue import Queue
 from threading import Thread
 import datetime
 
+from pymongo import MongoClient
+
 from deserialize import deserialize
 
 class ProcessReceivedData(Thread):
-    def __init__(self):
+    def __init__(self, mongo_url):
         Thread.__init__(self)
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
         self.running = False
+
+        # init pymongo connection and save the collection access
+        mongo_client = MongoClient(mongo_url)
+        self.mongo_col = mongo_client['gateway']['scanners']
 
     def run(self):
         self.running = True
@@ -34,11 +40,14 @@ class ProcessReceivedData(Thread):
 
             last_batch = scanner_devices.pop('last_batch')
             if last_batch:
-                # TODO connect with MongoDB
+                timestamp = datetime.datetime.fromtimestamp(scanner_devices.pop('timestamp'))
+                scanner_devices['timestamp'] = timestamp
+                scanner_devices['scanner_id'] = scanner_id
+
+                self.mongo_col.insert_one(scanner_devices)
                 # TODO connect with Kafka
                 print(f"DEBUG: scanner {scanner_id}")
-                ts = datetime.datetime.fromtimestamp(scanner_devices['timestamp'])
-                print(f"DEBUG: timestamp: {ts}")
+                print(f"DEBUG: timestamp: {timestamp}")
             else:
                 self.scanners_devices[scanner_id] = scanner_devices
     
