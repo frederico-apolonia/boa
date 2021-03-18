@@ -3,12 +3,15 @@
 #include <ArduinoJson.h>
 
 #include "sato_lib.h"
+#include "NRF52_MBED_TimerInterrupt.h"
 
 const short SCANNER_ID = 1;
 
+const bool DEBUG = false;
+
 const int MAX_SCANS = 10;
-const int SCAN_TIME = 900; //ms
-const int TIME_BETWEEN_SCANS = 100;
+const int SCAN_TIME = 1000; //ms
+const int TIME_BETWEEN_SCANS = 1000;
 const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
 const int MAX_PAYLOAD_DEVICES = 15;
 const int BUFFER_DEVICE_SIZE_BYTES = 16;
@@ -16,31 +19,68 @@ const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
 const int NULL_RSSI = 255;
 
-resetFunc();
-
 const char* GATEWAY_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
+
+// Timeout variables to handle board getting stuck
+const int STUCK_TIMER_INTERVAL_MS = 65000;
+const int STUCK_TIMER_DURATION_MS = 60000;
+// Timer
+NRF52_MBED_Timer stuckTimer(NRF_TIMER_3);
 
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
-JsonObject bleScanObject;
+
+template <class T> void serialPrintln(T value) {
+    if (DEBUG) {
+        Serial.println(value);
+    }
+}
+
+template <class T> void serialPrint(T value) {
+    if (DEBUG) {
+        Serial.print(value);
+    }
+}
+
+void turnOnBLEScan() {
+    while(!BLE.scan()) {
+        BLE.stopScan();
+        delay(750);
+    }
+}
+
+void stuckTimerHandler() {
+    // NOTE: don't add prints here, the board will crash
+    // board will be reseted, as if the reset button is pressed
+    NVIC_SystemReset();
+}
 
 void setup() {
 
     /* NOTE: Remove/Comment when deploying
      * transmit at 9600 bps
      */
-    Serial.begin(9600);
-    while(!Serial);
+    if (DEBUG) {
+        Serial.begin(9600);
+        while(!Serial);
+    }
 
     // initialize LED to visually indicate the scan
     pinMode(LED_BUILTIN, OUTPUT);
 
     if (!BLE.begin()) {
-        // TODO: Add blinking function to indicate Arduino malfunction
-        Serial.println("Couldn't start BLE.");
+        serialPrintln("Couldn't start BLE.");
         while(1);
     }
 
+    if (stuckTimer.attachInterruptInterval(STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
+        serialPrintln("Armed stuck timer.");
+    } else {
+        serialPrintln("Error while setting up stuck timer.");
+        while (true);
+    }
+
+    // TODO: correctly set scanner ID correctly
     char* deviceName = "SATO-SCANNER-1";
     BLE.setLocalName(deviceName);
 }
@@ -49,17 +89,12 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     digitalWrite(LED_BUILTIN, HIGH);
     long startingTime = millis();
 
-    while(!BLE.scan()) {
-        // TODO: Add blinking function to indicate Arduino malfunction with max retries
-        BLE.stopScan();
-        Serial.println("Failed to activate BLE scan");
-        delay(750);
-        Serial.println("Retrying BLE Scan");
-    }
+    turnOnBLEScan();
     BLEDevice peripheral;
     while(millis() - startingTime < timeLimitMs) {
         peripheral = BLE.available();
         if(peripheral) {
+            // TODO: filter other scanners
             // filter gateways
             if (peripheral.localName().indexOf("SATO-GATEWAY") < 0) {
                 if (!bleScans.containsKey(peripheral.address())) {
@@ -77,6 +112,7 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
 }
 
 void loop() {
+    int lastTimerReset = millis();
     int numScans = 1;
     long lastScanInstant = millis();
     long currentTime;
@@ -87,27 +123,31 @@ void loop() {
 
     while (true)
     {
-        // poll for BLE events, they'll be handled by the handlers
-	    BLE.poll();
         currentTime = millis();
+        // rearm alarm
+        if (millis() - lastTimerReset >= STUCK_TIMER_DURATION_MS) {
+            serialPrintln("Rearming stuck timer");
+            stuckTimer.restartTimer();
+            lastTimerReset = millis();
+        }
 
         if (scanning) {
             if (numScans <= MAX_SCANS) {
                 if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
-                    Serial.println("Scanning for devices...");
+                    serialPrintln("Scanning for devices...");
                     scanBLEDevices(SCAN_TIME, numScans);
                     lastScanInstant = millis();
                     numScans++;
-                    Serial.println("Scanning ended");
+                    serialPrintln("Scanning ended");
                 }
             } else {
-                Serial.println("Leaving scanning mode.");
+                serialPrintln("Leaving scanning mode.");
                 scanning = false;
                 deliveredDevicesToGateway = false;
             }
         } else {
             if (currentTime - lastScanInstant >= timeBetweenScans) {
-                Serial.println("Going back to scan mode");
+                serialPrintln("Going back to scan mode");
                 // time to go back to scan mode
                 scanning = true;
                 numScans = 1;
@@ -115,16 +155,11 @@ void loop() {
                 bleScans.clear();
             } else {
                 if (!deliveredDevicesToGateway) {
-                    while(!BLE.scan()) {
-                        // TODO: Add blinking function to indicate Arduino malfunction with max retries
-                        BLE.stopScan();
-                        Serial.println("Failed to activate BLE scan");
-                        delay(750);
-                        Serial.println("Retrying BLE Scan");
-                    }
+                    delay(2000);
+                    turnOnBLEScan();
                     deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
-                    Serial.println("Sent all devices to gateway?");
-                    Serial.println(deliveredDevicesToGateway);
+                    serialPrintln("Sent all devices to gateway?");
+                    serialPrintln(deliveredDevicesToGateway);
                     // TODO: Sleep remaining time after sending devices
                 }
             }
@@ -138,7 +173,7 @@ bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
 
         if (peripheral) {
             if (peripheral.localName().indexOf("SATO-GATEWAY") >= 0) {
-                Serial.println("It's a gateway.");
+                serialPrintln("It's a gateway.");
                 // stop scanning
                 BLE.stopScan();
                 if (writeDevicesOnGateway(peripheral)) {
@@ -154,16 +189,16 @@ bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
 }
 
 bool writeDevicesOnGateway(BLEDevice peripheral) {
-    //Serial.println("Connecting...");
+    //serialPrintln("Connecting...");
 
     if (peripheral.connect()) {
-        Serial.println("Connected to peripheral");
+        serialPrintln("Connected to peripheral");
     } else {
-        Serial.println("Failed to connect.");
+        serialPrintln("Failed to connect.");
         return false;
     }
     if (!peripheral.discoverAttributes()) {
-        Serial.println("Couldn't discover gateway characteristics.");
+        serialPrintln("Couldn't discover gateway characteristics.");
         peripheral.disconnect();
         return false;
     }
@@ -171,7 +206,7 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
     BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_CHAR_UUID);
 
     if (!writeCharacteristic) {
-        Serial.println("Device doesn't have write char!");
+        serialPrintln("Device doesn't have write char!");
         peripheral.disconnect();
         return false;
     }
@@ -179,12 +214,12 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
     /* ############
      * Send devices to gateway
      * ############ */
-    Serial.println("Preparing to send devices to gateway.");
+    serialPrintln("Preparing to send devices to gateway.");
     JsonObject rssisObject = bleScans.as<JsonObject>();
     int numDevices = rssisObject.size();
-    Serial.print("Got ");
-    Serial.print(numDevices);
-    Serial.println(" devices to send to gateway.");
+    serialPrint("Got ");
+    serialPrint(numDevices);
+    serialPrintln(" devices to send to gateway.");
     int numRemainDevices = numDevices;
 
     int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
@@ -213,7 +248,7 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
             bufferPos++;
         }
         if (bufferPos == currBuffSize) {
-            Serial.println("Writing value to characteristic...");
+            serialPrintln("Writing value to characteristic...");
             /* if so, we write the buffer on the characteristic */
             writeCharacteristic.writeValue(buffer, bufferPos);
 
@@ -229,6 +264,7 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
         }
     }
     
+    rssisObject.clear();
     peripheral.disconnect();
     return true;
 }
