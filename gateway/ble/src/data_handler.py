@@ -1,5 +1,6 @@
 from queue import Queue
 from threading import Thread
+import datetime
 
 from deserialize import deserialize
 
@@ -16,7 +17,6 @@ class ProcessReceivedData(Thread):
             scanner_buffer = self.scanner_queue.get(block=True, timeout=None)
             print("Processing new scanner values")
             scanner_devices = deserialize(scanner_buffer)
-            print(scanner_devices)
             
             scanner_id = scanner_devices.pop('scanner_id')
             
@@ -36,7 +36,9 @@ class ProcessReceivedData(Thread):
             if last_batch:
                 # TODO connect with MongoDB
                 # TODO connect with Kafka
-                print(f"DEBUG: scanner values:\n{scanner_devices}")
+                print(f"DEBUG: scanner {scanner_id}")
+                ts = datetime.datetime.fromtimestamp(scanner_devices['timestamp'])
+                print(f"DEBUG: timestamp: {ts}")
             else:
                 self.scanners_devices[scanner_id] = scanner_devices
     

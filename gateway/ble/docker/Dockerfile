@@ -23,7 +23,7 @@ RUN set -e -x ; \
 WORKDIR /code
 
 # Copy required files
-COPY ble/src/ble_scanner_values.py .
+COPY ble/src/*.py .
 COPY ble/requirements.txt .
 
 RUN set -e -x ; \
