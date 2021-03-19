@@ -21,11 +21,16 @@ const int NULL_RSSI = 255;
 
 const char* GATEWAY_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 
-// Timeout variables to handle board getting stuck
-const int STUCK_TIMER_INTERVAL_MS = 65000;
-const int STUCK_TIMER_DURATION_MS = 60000;
+// Timeout variables to handle board getting stuck on main loop
+const int LOOP_STUCK_TIMER_INTERVAL_MS = 62500;
+const int LOOP_STUCK_TIMER_DURATION_MS = 60000;
 // Timer
 NRF52_MBED_Timer stuckTimer(NRF_TIMER_3);
+
+// Timeout variables to handle board getting stuck on scan loop
+const int SCAN_STUCK_TIMER_INTERVAL_MS = 21500;
+// Timer
+NRF52_MBED_Timer scanStuckTimer(NRF_TIMER_3);
 
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
@@ -73,8 +78,15 @@ void setup() {
         while(1);
     }
 
-    if (stuckTimer.attachInterruptInterval(STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
+    if (stuckTimer.attachInterruptInterval(LOOP_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
         serialPrintln("Armed stuck timer.");
+    } else {
+        serialPrintln("Error while setting up stuck timer.");
+        while (true);
+    }
+
+    if (scanStuckTimer.attachInterruptInterval(SCAN_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
+        serialPrintln("Armed scan stuck timer.");
     } else {
         serialPrintln("Error while setting up stuck timer.");
         while (true);
@@ -125,7 +137,7 @@ void loop() {
     {
         currentTime = millis();
         // rearm alarm
-        if (millis() - lastTimerReset >= STUCK_TIMER_DURATION_MS) {
+        if (millis() - lastTimerReset >= LOOP_STUCK_TIMER_DURATION_MS) {
             serialPrintln("Rearming stuck timer");
             stuckTimer.restartTimer();
             lastTimerReset = millis();
@@ -142,6 +154,7 @@ void loop() {
                 }
             } else {
                 serialPrintln("Leaving scanning mode.");
+                scanStuckTimer.stopTimer();
                 scanning = false;
                 deliveredDevicesToGateway = false;
             }
@@ -150,6 +163,7 @@ void loop() {
                 serialPrintln("Going back to scan mode");
                 // time to go back to scan mode
                 scanning = true;
+                scanStuckTimer.restartTimer();
                 numScans = 1;
                 // need to clear previous findings
                 bleScans.clear();
