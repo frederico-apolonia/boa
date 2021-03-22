@@ -35,6 +35,9 @@ NRF52_MBED_Timer scanStuckTimer(NRF_TIMER_3);
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
 
+/* Json object to store devices before writting on gateway char */
+JsonObject rssisJsonObject;
+
 template <class T> void serialPrintln(T value) {
     if (DEBUG) {
         Serial.println(value);
@@ -229,15 +232,15 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
      * Send devices to gateway
      * ############ */
     serialPrintln("Preparing to send devices to gateway.");
-    JsonObject rssisObject = bleScans.as<JsonObject>();
-    int numDevices = rssisObject.size();
+    rssisJsonObject = bleScans.as<JsonObject>();
+    int numDevices = rssisJsonObject.size();
     serialPrint("Got ");
     serialPrint(numDevices);
     serialPrintln(" devices to send to gateway.");
     int numRemainDevices = numDevices;
 
-    int currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-    int currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
+    int currBuffNumDevices = getCurrBufferNumDevices(numRemainDevices);
+    int currBuffSize = getCurrBufferSize(currBuffNumDevices) + 1;
     if (currBuffNumDevices == numRemainDevices) {
         currBuffSize += 1;
     }
@@ -247,13 +250,13 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
     int bufferPos = 0;
     buffer[bufferPos] = (byte) SCANNER_ID;
     bufferPos++;
-    for (JsonPair scannedDevice : rssisObject) {
+    for (JsonPair scannedDevice : rssisJsonObject) {
         /* Add current device to buffer */
         JsonArray rssis = bleScans[scannedDevice.key().c_str()];
         const char* macAddress = scannedDevice.key().c_str();
 
         if (serializeDevice(macAddress, rssis, buffer, bufferPos)) {
-            bufferPos += 16;
+            bufferPos += BUFFER_DEVICE_SIZE_BYTES;
         }
 
         /* Check if we've reached the maximum bufferSize */
@@ -275,10 +278,24 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
 
             byte buffer[currBuffSize];
             bufferPos = 0;
+            buffer[bufferPos] = (byte) SCANNER_ID;
+            bufferPos++;
         }
     }
     
-    rssisObject.clear();
+    rssisJsonObject.clear();
     peripheral.disconnect();
     return true;
+}
+
+int getCurrBufferNumDevices(int numRemainingDevices) {
+    return min(numRemainingDevices, MAX_PAYLOAD_DEVICES);
+}
+
+int getCurrBufferSize(int numDevices) {
+    return numDevices * BUFFER_DEVICE_SIZE_BYTES;
+}
+
+int getTotalDeviceBufferSize() {
+    return rssisJsonObject.size() * BUFFER_DEVICE_SIZE_BYTES;
 }
