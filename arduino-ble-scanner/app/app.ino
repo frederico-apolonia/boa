@@ -22,7 +22,7 @@ const int NULL_RSSI = 255;
 const char* GATEWAY_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 
 // Timeout variables to handle board getting stuck on main loop
-const int LOOP_STUCK_TIMER_INTERVAL_MS = 62500;
+const int LOOP_STUCK_TIMER_INTERVAL_MS = 64000;
 const int LOOP_STUCK_TIMER_DURATION_MS = 60000;
 // Timer
 NRF52_MBED_Timer stuckTimer(NRF_TIMER_3);
@@ -111,7 +111,7 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
         if(peripheral) {
             // TODO: filter other scanners
             // filter gateways
-            if (peripheral.localName().indexOf("SATO-GATEWAY") < 0) {
+            if (peripheral.localName().indexOf("SATO-GATEWAY") < 0 && peripheral.localName().indexOf("SATO-SCANNER") < 0) {
                 if (!bleScans.containsKey(peripheral.address())) {
                     bleScans.createNestedArray(peripheral.address());
                 }
@@ -133,6 +133,7 @@ void loop() {
     long currentTime;
     bool scanning = true;
     bool deliveredDevicesToGateway = false;
+    long scanStart = millis();
 
     int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
@@ -157,6 +158,8 @@ void loop() {
                 }
             } else {
                 serialPrintln("Leaving scanning mode.");
+                serialPrint("Scan took (ms) ");
+                serialPrintln(millis() - scanStart);
                 scanStuckTimer.stopTimer();
                 scanning = false;
                 deliveredDevicesToGateway = false;
@@ -166,6 +169,7 @@ void loop() {
                 serialPrintln("Going back to scan mode");
                 // time to go back to scan mode
                 scanning = true;
+                scanStart = millis();
                 scanStuckTimer.restartTimer();
                 numScans = 1;
                 // need to clear previous findings
@@ -177,6 +181,9 @@ void loop() {
                     deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
                     serialPrintln("Sent all devices to gateway?");
                     serialPrintln(deliveredDevicesToGateway);
+                    if (!deliveredDevicesToGateway) {
+                        BLE.stopScan();
+                    }
                     // TODO: Sleep remaining time after sending devices
                 }
             }
@@ -206,8 +213,7 @@ bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
 }
 
 bool writeDevicesOnGateway(BLEDevice peripheral) {
-    //serialPrintln("Connecting...");
-
+    serialPrintln("Connecting...");
     if (peripheral.connect()) {
         serialPrintln("Connected to peripheral");
     } else {
