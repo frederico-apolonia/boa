@@ -3,7 +3,7 @@ import argparse
 import dbus
 
 from ble_server import Application
-from gatt_classes import GatewayReceiverAdvertisement, GatewayReceiverService
+from gatt_classes import GatewayKnownScannersService, GatewayReceiverAdvertisement, GatewayReceiverService
 from data_handler import ProcessReceivedData
 
 parser = argparse.ArgumentParser(description='Start SATO Gateway with a given ID')
@@ -20,6 +20,7 @@ def main():
 
     app = Application()
     app.add_service(GatewayReceiverService(index=0, process_data_thread=process_data_thread))
+    app.add_service(GatewayKnownScannersService(index=1))
     app.register()
 
     advertiser = GatewayReceiverAdvertisement(index=0, gateway_id=gateway_id)
