@@ -19,7 +19,11 @@ const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
 const int NULL_RSSI = 255;
 
-const char* GATEWAY_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
+const char* GATEWAY_WRITE_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
+
+const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe5";
+const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
+const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
 
 // Timeout variables to handle board getting stuck on main loop
 const int LOOP_STUCK_TIMER_INTERVAL_MS = 64000;
@@ -37,6 +41,13 @@ StaticJsonDocument<11264> bleScans;
 
 /* Json object to store devices before writting on gateway char */
 JsonObject rssisJsonObject;
+
+/* Known scanners vars */
+int numKnownScanners = 0;
+node_t* knownScanners;
+long lastKnownScannersRetrievalInstant;
+
+const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 300000;
 
 template <class T> void serialPrintln(T value) {
     if (DEBUG) {
@@ -63,6 +74,112 @@ void stuckTimerHandler() {
     NVIC_SystemReset();
 }
 
+bool registerOnGateway(BLEDevice gateway) {
+    if (!gateway.discoverAttributes()) {
+        serialPrintln("Couldn't discover gateway characteristics.");
+        gateway.disconnect();
+        return false;
+    }
+
+    BLECharacteristic registerCharacteristic = gateway.characteristic(GATEWAY_REGISTER_SCANNER_CHAR_UUID);
+
+    if (!registerCharacteristic) {
+        serialPrintln("Device doesn't have register write char!");
+        gateway.disconnect();
+        return false;
+    }
+
+    registerCharacteristic.writeValue("1");
+    return true;
+}
+
+bool getRegisteredScanners(BLEDevice gateway) {
+    serialPrintln("Getting number of registered scanners...");
+    BLECharacteristic numberRegisteredScannersCharacteristic = gateway.characteristic(GATEWAY_READ_NUM_SCANNERS_CHAR_UUID);
+
+    if (!numberRegisteredScannersCharacteristic) {
+        serialPrintln("Device doesn't have number registered scanners read char!");
+        gateway.disconnect();
+        return false;
+    }
+
+    int32_t numScanners;
+    numberRegisteredScannersCharacteristic.readValue(numScanners);
+    serialPrint("Number of registered scanners: ");
+    serialPrintln(numScanners);
+
+    byte scannersBuffer[numScanners*MAC_ADDRESS_SIZE_BYTES];
+    BLECharacteristic registeredScannersCharacteristic = gateway.characteristic(GATEWAY_READ_SCANNERS_CHAR_UUID);
+
+    if (!registeredScannersCharacteristic) {
+        serialPrintln("Device doesn't have registered scanners read char!");
+        gateway.disconnect();
+        return false;
+    }
+
+    if (numScanners > 0) {
+        int receivingBytes = numScanners * MAC_ADDRESS_SIZE_BYTES;
+        serialPrint("Receiving ");
+        serialPrint(receivingBytes);
+        serialPrintln(" bytes from gateway...");
+
+        registeredScannersCharacteristic.readValue(scannersBuffer, receivingBytes);
+        
+        /* deserialize received values */
+        char* scannersAddresses[numScanners];
+        for(int i = 0; i < numScanners; i++) {
+            char address[18];
+
+            byte addressBytes[MAC_ADDRESS_SIZE_BYTES];
+            for(int k = 0; k < MAC_ADDRESS_SIZE_BYTES; k++) {
+                addressBytes[k] = scannersBuffer[k + MAC_ADDRESS_SIZE_BYTES * i];
+            }
+            sprintf(address, "%02x:%02x:%02x:%02x:%02x:%02x\0", (int) addressBytes[0], (int) addressBytes[1], (int) addressBytes[2], (int) addressBytes[3], (int) addressBytes[4], (int) addressBytes[5]);
+
+            serialPrint("Got MAC address: ");
+            serialPrintln(address);
+
+            if (numKnownScanners == 0) {
+                serialPrintln("No known scanners, creating first node");
+                knownScanners = (node_t *) malloc(sizeof(node_t));
+                knownScanners->value = address;
+                knownScanners->next = NULL;
+
+                numKnownScanners++;
+            } else if (valueInLinkedList(knownScanners, address) < 0) {
+                serialPrintln("New scanner received, appending to the end of the list");
+                append(knownScanners, address);
+                numKnownScanners++;
+            }
+        }
+    }
+    
+    serialPrintln("Successfully received all addresses from gateway.");
+    lastKnownScannersRetrievalInstant = millis();
+    return true;
+}
+
+BLEDevice scanForGateway(int maxScanTime) {
+    BLE.scan();
+    serialPrintln("Searching for a gateway");
+    
+    long startingTime = millis();
+    BLEDevice result;
+    while(millis() - startingTime <= maxScanTime) {
+        BLEDevice peripheral = BLE.available();
+
+        if (peripheral) {
+            if (peripheral.localName().indexOf("SATO-GATEWAY") >= 0) {
+                serialPrintln("Found a gateway.");
+                // stop scanning
+                BLE.stopScan();
+                return peripheral;
+            }
+        }
+    }
+    return result;
+}
+
 void setup() {
 
     /* NOTE: Remove/Comment when deploying
@@ -81,6 +198,43 @@ void setup() {
         while(1);
     }
 
+    bool result = false;
+    
+    while(!result) {
+        BLEDevice gateway = scanForGateway(1500);
+
+        while(!gateway.connect()) {
+            serialPrintln("Failed to connect.");
+            delay(5000);
+            gateway = scanForGateway(1500);
+        }
+
+        serialPrintln("Connected to gateway");
+
+        if (!gateway.discoverAttributes()) {
+            serialPrintln("Couldn't discover gateway characteristics.");
+            gateway.disconnect();
+            continue;
+        }
+
+        result = getRegisteredScanners(gateway) || result;
+        if (!result) {
+            serialPrintln("Failed to get registered scanners!");
+            gateway.disconnect();
+            continue;
+        }
+
+        result = registerOnGateway(gateway) || result;
+        if (!result) {
+            serialPrintln("Failed to register gateway!");
+            gateway.disconnect();
+            continue;
+        }
+
+        gateway.disconnect();
+    }
+    serialPrintln("Retrieved scanners from gateway and registered!");
+
     if (stuckTimer.attachInterruptInterval(LOOP_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
         serialPrintln("Armed stuck timer.");
     } else {
@@ -95,9 +249,6 @@ void setup() {
         while (true);
     }
 
-    // TODO: correctly set scanner ID correctly
-    char* deviceName = "SATO-SCANNER-1";
-    BLE.setLocalName(deviceName);
 }
 
 void scanBLEDevices(int timeLimitMs, int maxArraySize) {
@@ -106,19 +257,29 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
 
     turnOnBLEScan();
     BLEDevice peripheral;
+    int macIsScanner = -1;
     while(millis() - startingTime < timeLimitMs) {
         peripheral = BLE.available();
         if(peripheral) {
-            // TODO: filter other scanners
+            
             // filter gateways
-            if (peripheral.localName().indexOf("SATO-GATEWAY") < 0 && peripheral.localName().indexOf("SATO-SCANNER") < 0) {
-                if (!bleScans.containsKey(peripheral.address())) {
-                    bleScans.createNestedArray(peripheral.address());
-                }
+            if (peripheral.localName().indexOf("SATO-GATEWAY") > 0) {
+                continue; 
+            }
 
-                if (bleScans[peripheral.address()].size() < maxArraySize) {
-                    bleScans[peripheral.address()].add(abs(peripheral.rssi()));
+            if (numKnownScanners > 0) {
+                macIsScanner = valueInLinkedList(knownScanners, peripheral.address().c_str());
+                if (macIsScanner == 0) {
+                    continue;
                 }
+            }
+
+            if (!bleScans.containsKey(peripheral.address())) {
+                bleScans.createNestedArray(peripheral.address());
+            }
+
+            if (bleScans[peripheral.address()].size() < maxArraySize) {
+                bleScans[peripheral.address()].add(abs(peripheral.rssi()));
             }
         }
     }
@@ -184,7 +345,30 @@ void loop() {
                     if (!deliveredDevicesToGateway) {
                         BLE.stopScan();
                     }
-                    // TODO: Sleep remaining time after sending devices
+                }
+            }
+
+            if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
+                BLEDevice gateway = scanForGateway(1500);
+
+                while(!gateway.connect()) {
+                    serialPrintln("Failed to connect.");
+                    delay(5000);
+                    gateway = scanForGateway(1500);
+                }
+
+                serialPrintln("Connected to gateway");
+
+                if (!gateway.discoverAttributes()) {
+                    serialPrintln("Couldn't discover gateway characteristics.");
+                    gateway.disconnect();
+                    continue;
+                }
+
+                if (!getRegisteredScanners(gateway)) {
+                    serialPrintln("Failed to get registered scanners!");
+                    gateway.disconnect();
+                    continue;
                 }
             }
         }
@@ -226,7 +410,7 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
         return false;
     }
 
-    BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_CHAR_UUID);
+    BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_WRITE_CHAR_UUID);
 
     if (!writeCharacteristic) {
         serialPrintln("Device doesn't have write char!");

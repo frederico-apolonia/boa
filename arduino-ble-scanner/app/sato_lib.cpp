@@ -39,3 +39,37 @@ int serializeDevice(const char* macAddress, JsonArray rssis, byte* buffer, int o
 
     return 1;
 }
+
+int valueInLinkedList(node_t* node, char* value) {
+    int result = -1;
+    node_t* current = node;
+    while(current->next != NULL && result == -1) {
+        result = strcmp(value, current->value);
+        current = current->next;
+    }
+    return result;
+}
+
+int valueInLinkedList(node_t *node, const char* value) {
+    int result = -1;
+    node_t* current = node;
+    while(current != NULL) {
+        result = strcmp(value, current->value);
+        if (result == 0) {
+            break;
+        }
+        current = current->next;
+    }
+    return result;
+}
+
+void append(node_t* node, char* value) {
+    node_t* current = node;
+    while(current->next != NULL) {
+        current = current->next;
+    }
+
+    current->next = (node_t *) malloc(sizeof(node_t));
+    current->next->value = value;
+    current->next->next = NULL;
+}
