@@ -4,10 +4,6 @@
 
 #include "sato_lib.h"
 
-const int MAC_ADDRESS_SIZE_BYTES = 6;
-const int MAC_ADDRESS_BASE = 16;
-const int NULL_RSSI = 255;
-
 void parseBytes(const char* str, char sep, byte* buffer, int maxBytes, int base, int offset=0) {
     for (int i = offset; i < offset + maxBytes; i++) {
         buffer[i] = strtoul(str, NULL, base);  // Convert byte
@@ -40,30 +36,27 @@ int serializeDevice(const char* macAddress, JsonArray rssis, byte* buffer, int o
     return 1;
 }
 
-int valueInLinkedList(node_t* node, char* value) {
-    int result = -1;
+bool compareAddressArrays(byte* addr1, byte* addr2) {
+    bool result = true;
+    int i = 0;
+    while(i < MAC_ADDRESS_SIZE_BYTES && result) {
+        result = addr1[i] == addr2[i];
+        i++;
+    }
+    return result;
+}
+
+bool valueInLinkedList(node_t *node, byte* addr) {
+    bool result = false;
     node_t* current = node;
-    while(current->next != NULL && result == -1) {
-        result = strcmp(value, current->value);
+    while(current != NULL && !result) {
+        result = compareAddressArrays(addr, current->value);
         current = current->next;
     }
     return result;
 }
 
-int valueInLinkedList(node_t *node, const char* value) {
-    int result = -1;
-    node_t* current = node;
-    while(current != NULL) {
-        result = strcmp(value, current->value);
-        if (result == 0) {
-            break;
-        }
-        current = current->next;
-    }
-    return result;
-}
-
-void append(node_t* node, char* value) {
+void append(node_t* node, byte* value) {
     node_t* current = node;
     while(current->next != NULL) {
         current = current->next;

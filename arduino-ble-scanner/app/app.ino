@@ -7,17 +7,7 @@
 
 const short SCANNER_ID = 1;
 
-const bool DEBUG = false;
-
-const int MAX_SCANS = 10;
-const int SCAN_TIME = 1000; //ms
-const int TIME_BETWEEN_SCANS = 1000;
-const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
-const int MAX_PAYLOAD_DEVICES = 15;
-const int BUFFER_DEVICE_SIZE_BYTES = 16;
-const int MAC_ADDRESS_SIZE_BYTES = 6;
-const int MAC_ADDRESS_BASE = 16;
-const int NULL_RSSI = 255;
+const bool DEBUG = true;
 
 const char* GATEWAY_WRITE_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 
@@ -25,14 +15,9 @@ const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
 
-// Timeout variables to handle board getting stuck on main loop
-const int LOOP_STUCK_TIMER_INTERVAL_MS = 64000;
-const int LOOP_STUCK_TIMER_DURATION_MS = 60000;
 // Timer
 NRF52_MBED_Timer stuckTimer(NRF_TIMER_3);
 
-// Timeout variables to handle board getting stuck on scan loop
-const int SCAN_STUCK_TIMER_INTERVAL_MS = 21500;
 // Timer
 NRF52_MBED_Timer scanStuckTimer(NRF_TIMER_3);
 
@@ -126,29 +111,22 @@ bool getRegisteredScanners(BLEDevice gateway) {
         registeredScannersCharacteristic.readValue(scannersBuffer, receivingBytes);
         
         /* deserialize received values */
-        char* scannersAddresses[numScanners];
         for(int i = 0; i < numScanners; i++) {
-            char address[18];
-
             byte addressBytes[MAC_ADDRESS_SIZE_BYTES];
             for(int k = 0; k < MAC_ADDRESS_SIZE_BYTES; k++) {
                 addressBytes[k] = scannersBuffer[k + MAC_ADDRESS_SIZE_BYTES * i];
             }
-            sprintf(address, "%02x:%02x:%02x:%02x:%02x:%02x\0", (int) addressBytes[0], (int) addressBytes[1], (int) addressBytes[2], (int) addressBytes[3], (int) addressBytes[4], (int) addressBytes[5]);
-
-            serialPrint("Got MAC address: ");
-            serialPrintln(address);
 
             if (numKnownScanners == 0) {
                 serialPrintln("No known scanners, creating first node");
                 knownScanners = (node_t *) malloc(sizeof(node_t));
-                knownScanners->value = address;
+                knownScanners->value = addressBytes;
                 knownScanners->next = NULL;
 
                 numKnownScanners++;
-            } else if (valueInLinkedList(knownScanners, address) < 0) {
+            } else if (!valueInLinkedList(knownScanners, addressBytes)) {
                 serialPrintln("New scanner received, appending to the end of the list");
-                append(knownScanners, address);
+                append(knownScanners, addressBytes);
                 numKnownScanners++;
             }
         }
@@ -268,8 +246,10 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
             }
 
             if (numKnownScanners > 0) {
-                macIsScanner = valueInLinkedList(knownScanners, peripheral.address().c_str());
-                if (macIsScanner == 0) {
+                byte macAddress[MAC_ADDRESS_SIZE_BYTES];
+                parseBytes(peripheral.address().c_str(), ':', macAddress, MAC_ADDRESS_SIZE_BYTES, MAC_ADDRESS_BASE, 0);
+                if (valueInLinkedList(knownScanners, macAddress)) {
+                    serialPrintln("Found another scanner.");
                     continue;
                 }
             }
