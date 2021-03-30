@@ -213,12 +213,6 @@ void setup() {
 
         serialPrintln("Connected to gateway");
 
-        if (!gateway.discoverAttributes()) {
-            serialPrintln("Couldn't discover gateway characteristics.");
-            gateway.disconnect();
-            continue;
-        }
-
         result = getRegisteredScanners(gateway) || result;
         if (!result) {
             serialPrintln("Failed to get registered scanners!");
@@ -353,27 +347,22 @@ void loop() {
             }
 
             if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
-                BLEDevice gateway = scanForGateway(1500);
+                BLEDevice gateway = scanForGateway(5000);
 
-                while(!gateway.connect()) {
+                if(!gateway.connected()) {
                     serialPrintln("Failed to connect.");
-                    delay(5000);
-                    gateway = scanForGateway(1500);
+                    continue;
                 }
 
                 serialPrintln("Connected to gateway");
-
-                if (!gateway.discoverAttributes()) {
-                    serialPrintln("Couldn't discover gateway characteristics.");
-                    gateway.disconnect();
-                    continue;
-                }
 
                 if (!getRegisteredScanners(gateway)) {
                     serialPrintln("Failed to get registered scanners!");
                     gateway.disconnect();
                     continue;
                 }
+
+                gateway.disconnect();
             }
         }
     }
