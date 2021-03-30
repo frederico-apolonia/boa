@@ -137,24 +137,44 @@ bool getRegisteredScanners(BLEDevice gateway) {
     return true;
 }
 
+/* Scan for a gateway, discovers attributes and return gateway connection if successful */
 BLEDevice scanForGateway(int maxScanTime) {
     BLE.scan();
+    delay(1500);
     serialPrintln("Searching for a gateway");
     
     long startingTime = millis();
     BLEDevice result;
-    while(millis() - startingTime <= maxScanTime) {
+    bool found = false;
+
+    while(millis() - startingTime <= maxScanTime && !found) {
         BLEDevice peripheral = BLE.available();
 
         if (peripheral) {
             if (peripheral.localName().indexOf("SATO-GATEWAY") >= 0) {
-                serialPrintln("Found a gateway.");
-                // stop scanning
+                serialPrintln("Peripheral device is a gateway");
                 BLE.stopScan();
-                return peripheral;
+                if (peripheral.connect()) {
+                    serialPrintln("Connected to gateway");
+                    if (peripheral.discoverAttributes()) {
+                        serialPrintln("Successfuly discovered gateway attributes");
+                        found = true;
+                        result = peripheral;
+                    } else {
+                        serialPrintln("Couldn't discover gateway attributes... disconnecting");
+                        peripheral.disconnect();
+                        BLE.scan();
+                    }
+                } else {
+                    serialPrintln("Connection with gateway failed");
+                    BLE.scan();
+                }
             }
         }
     }
+    serialPrint("End of scanning, got gateway? ");
+    serialPrintln(found);
+    BLE.stopScan();
     return result;
 }
 
@@ -176,15 +196,19 @@ void setup() {
         while(1);
     }
 
+    serialPrintln("BLE started");
+
+    serialPrintln("Waiting 1s for BLE module to fully activate");
+    delay(1000);
+
     bool result = false;
     
     while(!result) {
-        BLEDevice gateway = scanForGateway(1500);
+        BLEDevice gateway = scanForGateway(10000);
 
-        while(!gateway.connect()) {
-            serialPrintln("Failed to connect.");
-            delay(5000);
-            gateway = scanForGateway(1500);
+        if(!gateway.connected()) {
+            serialPrintln("No connection with gateway.");
+            continue;
         }
 
         serialPrintln("Connected to gateway");
