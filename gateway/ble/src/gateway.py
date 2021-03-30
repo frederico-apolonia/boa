@@ -4,7 +4,9 @@ import dbus
 import logging
 
 from ble_server import Application
-from gatt_classes import GatewayKnownScannersService, GatewayAdvertisement, GatewayReceiverService
+from ble_services.scanner_registration_service import GatewayKnownScannersService
+from ble_services.receiver_service import GatewayReceiverService
+from ble_services.gateway_advertiser import GatewayAdvertisement
 from data_handler import ProcessReceivedData
 from variables import LOG_PATH
 
@@ -16,7 +18,9 @@ mongo_uri = "mongodb://%s:%s@%s" % (quote_plus("root"), quote_plus("example"), q
 
 def main():
     # initialize logging
-    logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG)
+    logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)-8s %(message)s',
+                        datefmt='%d/%m/%Y %H:%M:%S')
     
     args = parser.parse_args()
     gateway_id = vars(args)['gateway_id'][0]

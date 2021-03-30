@@ -1,41 +1,8 @@
 import logging
 
-from ble_server import Advertisement, Service, Characteristic
-from data_handler import ProcessReceivedData
+from ble_server import Service, Characteristic
 import variables
 
-class GatewayAdvertisement(Advertisement):
-    def __init__(self, index, gateway_id):
-        Advertisement.__init__(self, index, "peripheral")
-        logging.debug('Creating Gateway Advertisement')
-        self.add_local_name(variables.GATEWAY_BASENAME + str(gateway_id)) # ha uma maneira de meter isto mais elegante
-        logging.debug(f'Local name: {self.local_name}')
-        self.include_tx_power = True
-
-
-class GatewayReceiverService(Service):
-    def __init__(self, index, process_data_thread):
-        Service.__init__(self, index=index, uuid=variables.GATEWAY_RECEIVER_SERVICE_UUID, primary=True)
-        logging.debug(f'Creating Receiver Service\nuuid: {self.uuid}')
-        self.add_characteristic(GatewayReceiverCharacteristic(service=self, process_data_thread=process_data_thread))
-        logging.debug(f'Added receiver characteristic')
-
-
-class GatewayReceiverCharacteristic(Characteristic):
-    def __init__(self, service, process_data_thread):
-        Characteristic.__init__(self, variables.GATEWAY_RECEIVER_CHARACTERISTIC_UUID,
-                                variables.GATEWAY_RECEIVER_CHARACTERISTIC_FLAGS,
-                                service)
-        logging.debug(f'Creating Receiver Characteristic\nuuid: {self.uuid}')
-        self.value = []
-        self.process_data_thread = process_data_thread
-
-    def WriteValue(self, buffer, options):
-        logging.debug(f"Received buffer with size {len(buffer)}")
-        self.process_data_thread.add_scanner_buffer(buffer)
-
-
-# TODO separar em ficheiros diferentes, são serviços diferentes!
 class GatewayKnownScannersService(Service):
     def __init__(self, index):
         Service.__init__(self, index=index, uuid=variables.GATEWAY_KNOWN_SCANNERS_SERVICE_UUID, primary=True)
