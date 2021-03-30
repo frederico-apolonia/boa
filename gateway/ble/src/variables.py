@@ -1,5 +1,8 @@
 from uuid import UUID
 
+###### LOGGING ######
+LOG_PATH = 'logs/gateway.log'
+
 ###### BLUEZ VARS ######
 BLUEZ_SERVICE_NAME = "org.bluez"
 BLUEZ_ADAPTER = "org.bluez.Adapter1"

@@ -1,5 +1,7 @@
-from variables import NUM_RRSI, RSSI_SIZE_BYTES, MAC_SIZE_BYTES, SCANNER_ID_SIZE_BYTES
+import logging
 import time
+
+from variables import NUM_RRSI, RSSI_SIZE_BYTES, MAC_SIZE_BYTES, SCANNER_ID_SIZE_BYTES
 
 def deserialize(buffer):
     # normalize buffer comming from dbus
@@ -29,6 +31,8 @@ def deserialize(buffer):
             device_scans[mac_address] = rssis
 
         result['devices'] = device_scans
+
+    logging.debug(f'Deserialized the following values: {result}')
     
     return result
 
