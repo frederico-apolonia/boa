@@ -1,8 +1,9 @@
 from threading import Timer
 from urllib.parse import quote_plus
-import argparse
 import dbus
 import logging
+
+from decouple import config
 
 from ble_server import Application
 from ble_services.scanner_registration_service import GatewayKnownScannersService
@@ -11,15 +12,17 @@ from ble_services.gateway_advertiser import GatewayAdvertisement
 from data_handler import ProcessReceivedData
 from variables import LOG_PATH
 
-parser = argparse.ArgumentParser(description='Start SATO Gateway with a given ID')
-parser.add_argument('gateway_id', metavar='Gateway ID', type=int, nargs=1, help='Gateway ID')
-
-# TODO: tirar daqui login
-mongo_uri = "mongodb://%s:%s@%s" % (quote_plus("root"), quote_plus("example"), quote_plus("localhost:27017"))
-
 def start_process_data():
     # TODO, log
     process_data_thread.start_submiting_data()
+
+def load_environment_variables():
+    result = {}
+    result['mongo_user'] = config('MONGO_USER')
+    result['mongo_password'] = config('MONGO_PASSWORD')
+    result['kafka_url'] = [config('KAFKA_URL')]
+    result['gateway_id'] = config('GATEWAY_ID', cast=int)
+    return result
 
 def main():
     # initialize logging
@@ -27,12 +30,14 @@ def main():
                         format='%(asctime)s %(levelname)-8s %(message)s',
                         datefmt='%d/%m/%Y %H:%M:%S')
     
-    args = parser.parse_args()
-    gateway_id = vars(args)['gateway_id'][0]
-    logging.info(f'Starting gateway {gateway_id}')
+    env_variables = load_environment_variables()
+    
+    mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(env_variables['mongo_user']), quote_plus(env_variables['mongo_password']), quote_plus("localhost:27017"))
+    kafka_server = env_variables['kafka_url']
+    gateway_id = env_variables['gateway_id']
 
     global process_data_thread
-    process_data_thread = ProcessReceivedData(mongo_uri)
+    process_data_thread = ProcessReceivedData(mongo_uri, kafka_server)
     process_data_thread.start()
 
     logging.debug('Starting dbus Application')

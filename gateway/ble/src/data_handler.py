@@ -1,14 +1,17 @@
 from queue import Queue
 from threading import Thread
 import datetime
+import json
 import logging
 
 from pymongo import MongoClient
+from kafka import KafkaProducer
 
 from deserialize import deserialize
+from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, mongo_url):
+    def __init__(self, mongo_url, kafka_server):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
         self.scanner_queue = Queue(maxsize=0)
@@ -21,6 +24,10 @@ class ProcessReceivedData(Thread):
         self.mongo_pre_process_col = self.mongo_client['gateway']['pre_process']
         self.mongo_submit_col = self.mongo_client['gateway']['scanner_values']
         self.mongo_registered_scanners = self.mongo_client['gateway']['registered_scanners']
+
+        # init kafka connection
+        self.kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
+                                            value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
     def run(self):
         logging.info('ProcessReceivedData data thread is now running')
@@ -55,6 +62,7 @@ class ProcessReceivedData(Thread):
                 logging.info(f'Sending batch from scanner to mongo {scanner_id} lastly received at {timestamp} with {len(scanner_devices["devices"])}')
                 if self.submit_data:
                     self.mongo_submit_col.insert_one(scanner_devices)
+                    self.publish_devices_to_kafka(scanner_devices)
                 else:
                     self.mongo_pre_process_col.insert_one(scanner_devices)
             else:
@@ -63,6 +71,9 @@ class ProcessReceivedData(Thread):
     def add_scanner_buffer(self, scanner_buffer):
         logging.debug("Adding new scanner values to queue")
         self.scanner_queue.put_nowait(scanner_buffer)
+
+    def publish_devices_to_kafka(self, scanner_devices):
+        self.kafka_producer.send(KAFKA_TOPIC, scanner_devices)
 
     def stop(self):
         logging.info('Shutting down ProcessData thread')
