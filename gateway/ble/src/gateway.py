@@ -1,3 +1,4 @@
+from threading import Timer
 from urllib.parse import quote_plus
 import argparse
 import dbus
@@ -16,6 +17,10 @@ parser.add_argument('gateway_id', metavar='Gateway ID', type=int, nargs=1, help=
 # TODO: tirar daqui login
 mongo_uri = "mongodb://%s:%s@%s" % (quote_plus("root"), quote_plus("example"), quote_plus("localhost:27017"))
 
+def start_process_data():
+    # TODO, log
+    process_data_thread.start_submiting_data()
+
 def main():
     # initialize logging
     logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG,
@@ -26,6 +31,7 @@ def main():
     gateway_id = vars(args)['gateway_id'][0]
     logging.info(f'Starting gateway {gateway_id}')
 
+    global process_data_thread
     process_data_thread = ProcessReceivedData(mongo_uri)
     process_data_thread.start()
 
@@ -34,7 +40,7 @@ def main():
     logging.info('Adding Gateway Receiver service')
     app.add_service(GatewayReceiverService(index=0, process_data_thread=process_data_thread))
     logging.info('Adding Gateaway Known Scanners service')
-    app.add_service(GatewayKnownScannersService(index=1))
+    app.add_service(GatewayKnownScannersService(index=1, mongo_url=mongo_uri))
     logging.debug('Registering the dbus Application')
     app.register()
 
@@ -45,6 +51,7 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
+        Timer(600, start_process_data).start() # TODO: 600s numa variavel
         app.run()
     except KeyboardInterrupt:
         app.quit()

@@ -14,10 +14,13 @@ class ProcessReceivedData(Thread):
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
         self.running = False
+        self.submit_data = False
 
         # init pymongo connection and save the collection access
-        mongo_client = MongoClient(mongo_url)
-        self.mongo_col = mongo_client['gateway']['scanners']
+        self.mongo_client = MongoClient(mongo_url)
+        self.mongo_pre_process_col = self.mongo_client['gateway']['pre_process']
+        self.mongo_submit_col = self.mongo_client['gateway']['scanner_values']
+        self.mongo_registered_scanners = self.mongo_client['gateway']['registered_scanners']
 
     def run(self):
         logging.info('ProcessReceivedData data thread is now running')
@@ -50,10 +53,10 @@ class ProcessReceivedData(Thread):
                 scanner_devices['scanner_id'] = scanner_id
 
                 logging.info(f'Sending batch from scanner to mongo {scanner_id} lastly received at {timestamp} with {len(scanner_devices["devices"])}')
-                self.mongo_col.insert_one(scanner_devices)
-                # TODO connect with Kafka
-                logging.debug(f"DEBUG: scanner {scanner_id}")
-                logging.debug(f"DEBUG: timestamp: {timestamp}")
+                if self.submit_data:
+                    self.mongo_submit_col.insert_one(scanner_devices)
+                else:
+                    self.mongo_pre_process_col.insert_one(scanner_devices)
             else:
                 self.scanners_devices[scanner_id] = scanner_devices
     
@@ -64,3 +67,33 @@ class ProcessReceivedData(Thread):
     def stop(self):
         logging.info('Shutting down ProcessData thread')
         self.running = False
+    
+    def start_submiting_data(self):
+        # TODO Logging
+        print("Enabling data submission...")
+
+        # get scanner mac addresses registrated on the past 10 min
+        scanner_macs = []
+        registered_scanners_cursor = self.mongo_registered_scanners.find({})
+        for scanner in registered_scanners_cursor:
+            scanner_macs += [list(scanner.keys())[0]]
+
+        # Filter entries from mongo containing Scanners Mac Addresses
+        filtered_entries = []
+        cursor = self.mongo_pre_process_col.find({})
+        for entry in cursor:
+            devices = {}
+            for mac_address in entry['devices'].keys():
+                if mac_address not in scanner_macs:
+                    devices[mac_address] = entry['devices'][mac_address]
+
+            filtered_entries += [{
+                'devices': devices,
+                'timestamp': entry['timestamp'],
+                'scanner_id': entry['scanner_id'],
+            }]
+
+        self.mongo_submit_col.insert_many(filtered_entries)
+        self.mongo_pre_process_col.drop()
+        
+        self.submit_data = True
