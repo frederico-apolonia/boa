@@ -406,8 +406,14 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
     serialPrintln(" devices to send to gateway.");
     int numRemainDevices = numDevices;
 
+    /*
+     * SCANNER sends to GATEWAY the following:
+     * [SCANNER_ID (1 BYTE) ; MAC_SIZE (1 BYTE) ; NUM_RSSI (1 BYTE) [MAC (MAC_SIZE BYTES); RSSI (NUM_RSSI * SIZE_RSSI BYTES)]] # 243 max
+     */
     int currBuffNumDevices = getCurrBufferNumDevices(numRemainDevices);
-    int currBuffSize = getCurrBufferSize(currBuffNumDevices) + 1;
+    // SCANNER_ID (1) + MAC_SIZE (1) + DEVICES
+    int currBuffSize = 1 + 1 + 1 + getCurrBufferSize(currBuffNumDevices);
+    // IF it is the last batch, 1 BYTE for LAST_DEVICE_CHAR # 244 max
     if (currBuffNumDevices == numRemainDevices) {
         currBuffSize += 1;
     }
@@ -415,8 +421,18 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
 
     byte buffer[currBuffSize];
     int bufferPos = 0;
+    // Add Scanner ID
     buffer[bufferPos] = (byte) SCANNER_ID;
     bufferPos++;
+
+    // Add Mac Size
+    buffer[bufferPos] = (byte) MAC_ADDRESS_SIZE_BYTES;
+    bufferPos++;
+
+    // Add Num RSSI per device
+    buffer[bufferPos] = (byte) MAX_SCANS;
+    bufferPos++;
+
     for (JsonPair scannedDevice : rssisJsonObject) {
         /* Add current device to buffer */
         JsonArray rssis = bleScans[scannedDevice.key().c_str()];
