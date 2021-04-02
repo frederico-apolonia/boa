@@ -74,7 +74,7 @@ bool registerOnGateway(BLEDevice gateway) {
         return false;
     }
 
-    registerCharacteristic.writeValue("1");
+    registerCharacteristic.writeValue(SCANNER_ID);
     return true;
 }
 
@@ -139,14 +139,19 @@ bool getRegisteredScanners(BLEDevice gateway) {
 
 /* Scan for a gateway, discovers attributes and return gateway connection if successful */
 BLEDevice scanForGateway(int maxScanTime) {
-    BLE.scan();
-    delay(1500);
+    long startingTime = millis();
     serialPrintln("Searching for a gateway");
     
-    long startingTime = millis();
+    serialPrintln("Activating BLE Scan");
+    turnOnBLEScan();
+    delay(1500);
+    
     BLEDevice result;
     bool found = false;
 
+    serialPrint("Starting scan, got ");
+    serialPrint(maxScanTime);
+    serialPrintln("ms to find and connect to a gateway");
     while(millis() - startingTime <= maxScanTime && !found) {
         BLEDevice peripheral = BLE.available();
 
@@ -160,17 +165,20 @@ BLEDevice scanForGateway(int maxScanTime) {
                         serialPrintln("Successfuly discovered gateway attributes");
                         found = true;
                         result = peripheral;
+                        continue;
                     } else {
                         serialPrintln("Couldn't discover gateway attributes... disconnecting");
                         peripheral.disconnect();
-                        BLE.scan();
+                        turnOnBLEScan();
                     }
                 } else {
                     serialPrintln("Connection with gateway failed");
-                    BLE.scan();
+                    turnOnBLEScan();
                 }
+                delay(1000);
             }
         }
+
     }
     serialPrint("End of scanning, got gateway? ");
     serialPrintln(found);
@@ -324,30 +332,8 @@ void loop() {
                 deliveredDevicesToGateway = false;
             }
         } else {
-            if (currentTime - lastScanInstant >= timeBetweenScans) {
-                serialPrintln("Going back to scan mode");
-                // time to go back to scan mode
-                scanning = true;
-                scanStart = millis();
-                scanStuckTimer.restartTimer();
-                numScans = 1;
-                // need to clear previous findings
-                bleScans.clear();
-            } else {
-                if (!deliveredDevicesToGateway) {
-                    delay(2000);
-                    turnOnBLEScan();
-                    deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
-                    serialPrintln("Sent all devices to gateway?");
-                    serialPrintln(deliveredDevicesToGateway);
-                    if (!deliveredDevicesToGateway) {
-                        BLE.stopScan();
-                    }
-                }
-            }
-
             if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
-                BLEDevice gateway = scanForGateway(5000);
+                BLEDevice gateway = scanForGateway(10000);
 
                 if(!gateway.connected()) {
                     serialPrintln("Failed to connect.");
@@ -364,45 +350,43 @@ void loop() {
 
                 gateway.disconnect();
             }
+
+            if (currentTime - lastScanInstant >= timeBetweenScans) {
+                serialPrintln("Going back to scan mode");
+                // time to go back to scan mode
+                scanning = true;
+                scanStart = millis();
+                scanStuckTimer.restartTimer();
+                numScans = 1;
+                // need to clear previous findings
+                bleScans.clear();
+            } else {
+                if (!deliveredDevicesToGateway) {
+                    delay(1500);
+                    deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
+                    serialPrintln("Sent all devices to gateway?");
+                    serialPrintln(deliveredDevicesToGateway);
+                    if (!deliveredDevicesToGateway) {
+                        BLE.stopScan();
+                    }
+                }
+            }
         }
     }
 }
 
 bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
+    BLEDevice gateway;
     while(millis() - startingTime <= timeBetweenScans) {
-        BLEDevice peripheral = BLE.available();
-
-        if (peripheral) {
-            if (peripheral.localName().indexOf("SATO-GATEWAY") >= 0) {
-                serialPrintln("It's a gateway.");
-                // stop scanning
-                BLE.stopScan();
-                if (writeDevicesOnGateway(peripheral)) {
-                    return true;
-                }
-                // peripheral disconnected, start scanning again
-                BLE.scan();
-            }
+        gateway = scanForGateway(10000);
+        if (gateway) {
+            return writeDevicesOnGateway(gateway);
         }
     }
-
     return false;
 }
 
 bool writeDevicesOnGateway(BLEDevice peripheral) {
-    serialPrintln("Connecting...");
-    if (peripheral.connect()) {
-        serialPrintln("Connected to peripheral");
-    } else {
-        serialPrintln("Failed to connect.");
-        return false;
-    }
-    if (!peripheral.discoverAttributes()) {
-        serialPrintln("Couldn't discover gateway characteristics.");
-        peripheral.disconnect();
-        return false;
-    }
-
     BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_WRITE_CHAR_UUID);
 
     if (!writeCharacteristic) {
