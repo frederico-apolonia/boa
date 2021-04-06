@@ -1,9 +1,11 @@
+import _thread
 from threading import Timer
 from urllib.parse import quote_plus
 import dbus
 import logging
 
 from decouple import config
+from kafka import KafkaConsumer
 
 from ble_server import Application
 from ble_services.scanner_registration_service import GatewayKnownScannersService
@@ -23,6 +25,12 @@ def load_environment_variables():
     result['kafka_url'] = [config('KAFKA_URL')]
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     return result
+
+def salt_kafka_consumer(kafka_url, process_data_thread):
+    salt_topic = 'GATEWAY_SALT'
+    consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
+    for msg in consumer:
+        process_data_thread.set_salt_value(msg.value)
 
 def main():
     # initialize logging
@@ -56,7 +64,8 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
-        Timer(600, start_process_data).start() # TODO: 600s numa variavel
+        Timer(900, start_process_data).start() # TODO: 900s numa variavel
+        _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
         app.run()
     except KeyboardInterrupt:
         app.quit()
