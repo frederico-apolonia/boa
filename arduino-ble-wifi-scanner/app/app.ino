@@ -1,11 +1,11 @@
 #include <Arduino.h>
 #include <ArduinoBLE.h>
 #include <ArduinoJson.h>
+#include <Adafruit_SleepyDog.h>
 
 #include "sato_lib.h"
-#include "NRF52_MBED_TimerInterrupt.h"
 
-const short SCANNER_ID = 1;
+const short SCANNER_ID = 2;
 
 const bool DEBUG = true;
 
@@ -14,12 +14,6 @@ const char* GATEWAY_WRITE_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe5";
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
-
-// Timer
-NRF52_MBED_Timer stuckTimer(NRF_TIMER_3);
-
-// Timer
-NRF52_MBED_Timer scanStuckTimer(NRF_TIMER_3);
 
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
@@ -51,12 +45,6 @@ void turnOnBLEScan() {
         BLE.stopScan();
         delay(750);
     }
-}
-
-void stuckTimerHandler() {
-    // NOTE: don't add prints here, the board will crash
-    // board will be reseted, as if the reset button is pressed
-    NVIC_SystemReset();
 }
 
 bool registerOnGateway(BLEDevice gateway) {
@@ -238,27 +226,13 @@ void setup() {
         gateway.disconnect();
     }
     serialPrintln("Retrieved scanners from gateway and registered!");
-
-    if (stuckTimer.attachInterruptInterval(LOOP_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
-        serialPrintln("Armed stuck timer.");
-    } else {
-        serialPrintln("Error while setting up stuck timer.");
-        while (true);
-    }
-
-    if (scanStuckTimer.attachInterruptInterval(SCAN_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
-        serialPrintln("Armed scan stuck timer.");
-    } else {
-        serialPrintln("Error while setting up stuck timer.");
-        while (true);
-    }
-
 }
 
 void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     digitalWrite(LED_BUILTIN, HIGH);
     long startingTime = millis();
 
+    Watchdog.enable(11000);
     turnOnBLEScan();
     BLEDevice peripheral;
     int macIsScanner = -1;
@@ -291,10 +265,11 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     }
     digitalWrite(LED_BUILTIN, LOW);
     BLE.stopScan();
+    Watchdog.reset();
+    Watchdog.disable();
 }
 
 void loop() {
-    int lastTimerReset = millis();
     int numScans = 1;
     long lastScanInstant = millis();
     long currentTime;
@@ -307,13 +282,6 @@ void loop() {
     while (true)
     {
         currentTime = millis();
-        // rearm alarm
-        if (millis() - lastTimerReset >= LOOP_STUCK_TIMER_DURATION_MS) {
-            serialPrintln("Rearming stuck timer");
-            stuckTimer.restartTimer();
-            lastTimerReset = millis();
-        }
-
         if (scanning) {
             if (numScans <= MAX_SCANS) {
                 if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
@@ -327,7 +295,6 @@ void loop() {
                 serialPrintln("Leaving scanning mode.");
                 serialPrint("Scan took (ms) ");
                 serialPrintln(millis() - scanStart);
-                scanStuckTimer.stopTimer();
                 scanning = false;
                 deliveredDevicesToGateway = false;
             }
@@ -356,7 +323,6 @@ void loop() {
                 // time to go back to scan mode
                 scanning = true;
                 scanStart = millis();
-                scanStuckTimer.restartTimer();
                 numScans = 1;
                 // need to clear previous findings
                 bleScans.clear();
