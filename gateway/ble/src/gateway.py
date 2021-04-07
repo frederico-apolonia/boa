@@ -1,7 +1,11 @@
+import _thread
+from threading import Timer
 from urllib.parse import quote_plus
-import argparse
 import dbus
 import logging
+
+from decouple import config
+from kafka import KafkaConsumer
 
 from ble_server import Application
 from ble_services.scanner_registration_service import GatewayKnownScannersService
@@ -10,11 +14,23 @@ from ble_services.gateway_advertiser import GatewayAdvertisement
 from data_handler import ProcessReceivedData
 from variables import LOG_PATH
 
-parser = argparse.ArgumentParser(description='Start SATO Gateway with a given ID')
-parser.add_argument('gateway_id', metavar='Gateway ID', type=int, nargs=1, help='Gateway ID')
+def start_process_data():
+    # TODO, log
+    process_data_thread.start_submiting_data()
 
-# TODO: tirar daqui login
-mongo_uri = "mongodb://%s:%s@%s" % (quote_plus("root"), quote_plus("example"), quote_plus("localhost:27017"))
+def load_environment_variables():
+    result = {}
+    result['mongo_user'] = config('MONGO_USER')
+    result['mongo_password'] = config('MONGO_PASSWORD')
+    result['kafka_url'] = [config('KAFKA_URL')]
+    result['gateway_id'] = config('GATEWAY_ID', cast=int)
+    return result
+
+def salt_kafka_consumer(kafka_url, process_data_thread):
+    salt_topic = 'GATEWAY_SALT'
+    consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
+    for msg in consumer:
+        process_data_thread.set_salt_value(msg.value)
 
 def main():
     # initialize logging
@@ -22,11 +38,14 @@ def main():
                         format='%(asctime)s %(levelname)-8s %(message)s',
                         datefmt='%d/%m/%Y %H:%M:%S')
     
-    args = parser.parse_args()
-    gateway_id = vars(args)['gateway_id'][0]
-    logging.info(f'Starting gateway {gateway_id}')
+    env_variables = load_environment_variables()
+    
+    mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(env_variables['mongo_user']), quote_plus(env_variables['mongo_password']), quote_plus("localhost:27017"))
+    kafka_server = env_variables['kafka_url']
+    gateway_id = env_variables['gateway_id']
 
-    process_data_thread = ProcessReceivedData(mongo_uri)
+    global process_data_thread
+    process_data_thread = ProcessReceivedData(mongo_uri, kafka_server)
     process_data_thread.start()
 
     logging.debug('Starting dbus Application')
@@ -34,7 +53,7 @@ def main():
     logging.info('Adding Gateway Receiver service')
     app.add_service(GatewayReceiverService(index=0, process_data_thread=process_data_thread))
     logging.info('Adding Gateaway Known Scanners service')
-    app.add_service(GatewayKnownScannersService(index=1))
+    app.add_service(GatewayKnownScannersService(index=1, mongo_url=mongo_uri))
     logging.debug('Registering the dbus Application')
     app.register()
 
@@ -45,6 +64,8 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
+        Timer(900, start_process_data).start() # TODO: 900s numa variavel
+        _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
         app.run()
     except KeyboardInterrupt:
         app.quit()

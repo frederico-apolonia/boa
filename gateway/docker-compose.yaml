@@ -1,8 +1,6 @@
 version: '3.1'
 
 services:
-  ble-module:
-    image: ble:latest
   mongo:
     image: mongo
     restart: always
