@@ -95,7 +95,8 @@ class ProcessReceivedData(Thread):
         self.scanner_queue.put_nowait(scanner_buffer)
 
     def publish_devices_to_kafka(self, scanner_devices):
-        self.kafka_producer.send(KAFKA_TOPIC, scanner_devices)
+        devices = json.loads(json.dumps(scanner_devices, default=str))
+        self.kafka_producer.send(KAFKA_TOPIC, devices)
 
     def stop(self):
         logging.info('Shutting down ProcessData thread')
@@ -130,5 +131,7 @@ class ProcessReceivedData(Thread):
 
         self.mongo_submit_col.insert_many(filtered_entries)
         self.mongo_pre_process_col.drop()
+
+        self.publish_devices_to_kafka(filtered_entries)
         
         self.submit_data = True
