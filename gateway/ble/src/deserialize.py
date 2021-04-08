@@ -46,7 +46,7 @@ def deserialize(buffer):
 
 def deserialize_mac(buffer):
     mac_hex = [format(value, '02x') for value in buffer]
-    return ':'.join(mac_hex)
+    return ':'.join(mac_hex).lower()
 
 def last_batch(buffer, mac_size, num_rssi):
     buffer_len = len(buffer)

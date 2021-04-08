@@ -13,13 +13,16 @@ from deserialize import deserialize
 from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, mongo_url, kafka_server):
+    def __init__(self, mongo_url, kafka_server, filter_macs=None):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
         self.running = False
         self.submit_data = False
+
+        # save macs to be filtered
+        self.filter_macs = filter_macs
 
         # init pymongo connection and save the collection access
         self.mongo_client = MongoClient(mongo_url)
@@ -57,7 +60,11 @@ class ProcessReceivedData(Thread):
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
 
-            if self.submit_data:
+            if self.filter_devices:
+                # if we only want to register some MAC addresses, filter them
+                filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_devices} 
+                scanner_devices['devices'] = filtered_devices
+            elif self.submit_data:
                 with self.salt_lock:
                     devices = anonymize_devices(scanner_devices.pop('devices'), self.salt)
                 scanner_devices['devices'] = devices

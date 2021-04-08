@@ -24,6 +24,12 @@ def load_environment_variables():
     result['mongo_password'] = config('MONGO_PASSWORD')
     result['kafka_url'] = [config('KAFKA_URL')]
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
+    # TODO: Arranjar uma forma de alterar isto mais dinamicamente
+    filter_macs = config('FILTER_MACS', None)
+    if filter_macs:
+        result['filter_macs'] = filter_macs.lower().split(',')
+    else:
+        result['filter_macs'] = None
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
@@ -45,7 +51,8 @@ def main():
     gateway_id = env_variables['gateway_id']
 
     global process_data_thread
-    process_data_thread = ProcessReceivedData(mongo_uri, kafka_server)
+    filter_macs = env_variables['filter_macs']
+    process_data_thread = ProcessReceivedData(mongo_uri, kafka_server, filter_macs)
     process_data_thread.start()
 
     logging.debug('Starting dbus Application')
