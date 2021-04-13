@@ -25,7 +25,7 @@ def load_environment_variables():
     result['kafka_url'] = [config('KAFKA_URL')]
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     # TODO: Arranjar uma forma de alterar isto mais dinamicamente
-    filter_macs = config('FILTER_MACS', None)
+    filter_macs = config('FILTER_MACS', default=None)
     if filter_macs:
         result['filter_macs'] = filter_macs.lower().split(',')
     else:
@@ -40,7 +40,7 @@ def salt_kafka_consumer(kafka_url, process_data_thread):
 
 def main():
     # initialize logging
-    logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG,
+    logging.basicConfig(filename=LOG_PATH, level=logging.INFO,
                         format='%(asctime)s %(levelname)-8s %(message)s',
                         datefmt='%d/%m/%Y %H:%M:%S')
     

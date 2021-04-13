@@ -60,9 +60,9 @@ class ProcessReceivedData(Thread):
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
 
-            if self.filter_devices:
+            if self.filter_macs:
                 # if we only want to register some MAC addresses, filter them
-                filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_devices} 
+                filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_macs} 
                 scanner_devices['devices'] = filtered_devices
             elif self.submit_data:
                 with self.salt_lock:
@@ -124,11 +124,14 @@ class ProcessReceivedData(Thread):
         cursor = self.mongo_pre_process_col.find({})
         for entry in cursor:
             devices = {}
-            with self.salt_lock:
-                for mac_address in entry['devices'].keys():
-                    if mac_address not in scanner_macs:
-                        new_mac_address = anonymize(mac_address, self.salt)
-                        devices[new_mac_address] = entry['devices'][mac_address]
+            if not self.filter_macs:
+                with self.salt_lock:
+                    for mac_address in entry['devices'].keys():
+                        if mac_address not in scanner_macs:
+                            new_mac_address = anonymize(mac_address, self.salt)
+                            devices[new_mac_address] = entry['devices'][mac_address]
+            else:
+                devices = entry['devices']
 
             filtered_entries += [{
                 'devices': devices,

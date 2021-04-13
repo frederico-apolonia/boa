@@ -1,4 +1,6 @@
+import datetime
 import logging
+import time
 
 from pymongo import MongoClient
 
@@ -31,13 +33,13 @@ class GatewayRegisterScannerCharacteristic(Characteristic):
                                 variables.GATEWAY_REGISTER_SCANNER_CHARACTERISTIC_FLAGS,
                                 service)
         self.known_scanners_char = known_scanners_char
-        logging.debug(f'Creating Scanner Registration Characteristic\nuuid: {self.uuid}')
+        logging.info(f'Creating Scanner Registration Characteristic\nuuid: {self.uuid}')
 
     def WriteValue(self, buffer, options):
         mac_address = [int(f'0x{value}', 16) for value in options.get('device').split('/')[-1].split('_')[1:]]
         # retirar scanner_id do buffer
         scanner_id = int(buffer[0])
-        logging.debug(f'Received a registration from Scanner {mac_address} with id {scanner_id}')
+        logging.info(f'Received a registration from Scanner {mac_address} with id {scanner_id}')
         self.known_scanners_char.add_mac_address(scanner_id, mac_address)
 
 
@@ -64,14 +66,22 @@ class GatewayKnownScannersCharacteristic(Characteristic):
 
     def add_mac_address(self, scanner_id, mac_address_bytes):
         mac_address = deserialize_mac(mac_address_bytes)
+        timestamp = datetime.datetime.fromtimestamp(time.time())
         
         if mac_address_bytes not in self.scanner_macs:
-            logging.debug(f'New MAC address from scanner received: {mac_address}')
+            logging.info(f'New MAC address from scanner received: {mac_address}')
             self.scanner_macs.append(mac_address_bytes)
             self.num_known_scanners_char.add_scanner()
-            self.mongo_registered_scanners.insert_one({f'{scanner_id}': mac_address})
         else:
             logging.warning(f'Received already existing MAC address: {mac_address}')
+
+        values_dict = {
+            'scanner_id': scanner_id,
+            'scanner_mac': mac_address,
+            'timestamp': timestamp,
+        }
+
+        self.mongo_registered_scanners.insert_one(values_dict)
 
 
 class GatewayNumberKnownScannersCharacteristic(Characteristic):
