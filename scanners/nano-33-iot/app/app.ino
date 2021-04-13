@@ -16,12 +16,13 @@ const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
 
+/*
 // Timer
 SAMDTimer stuckTimer(TIMER_TC3);
 
 // Timer
 SAMDTimer scanStuckTimer(TIMER_TC3);
-
+*/
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
 
@@ -54,10 +55,10 @@ void turnOnBLEScan() {
     }
 }
 
-void stuckTimerHandler() {
+/*void stuckTimerHandler() {
     // reset board via watchdog after 1 second
     Watchdog.enable(1000);
-}
+}*/
 
 bool registerOnGateway(BLEDevice gateway) {
     if (!gateway.discoverAttributes()) {
@@ -143,6 +144,7 @@ BLEDevice scanForGateway(int maxScanTime) {
     serialPrintln("Searching for a gateway");
     
     serialPrintln("Activating BLE Scan");
+    Watchdog.enable(16000);
     turnOnBLEScan();
     delay(1500);
     
@@ -183,6 +185,8 @@ BLEDevice scanForGateway(int maxScanTime) {
     serialPrint("End of scanning, got gateway? ");
     serialPrintln(found);
     BLE.stopScan();
+    Watchdog.reset();
+    Watchdog.disable();
     return result;
 }
 
@@ -239,6 +243,7 @@ void setup() {
     }
     serialPrintln("Retrieved scanners from gateway and registered!");
 
+    /*
     if (stuckTimer.attachInterruptInterval(LOOP_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
         serialPrintln("Armed stuck timer.");
     } else {
@@ -251,13 +256,14 @@ void setup() {
     } else {
         serialPrintln("Error while setting up stuck timer.");
         while (true);
-    }
+    }*/
 }
 
 void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     digitalWrite(LED_BUILTIN, HIGH);
     long startingTime = millis();
 
+    Watchdog.enable(timeLimitMs + 1000);
     turnOnBLEScan();
     BLEDevice peripheral;
     int macIsScanner = -1;
@@ -290,6 +296,8 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     }
     digitalWrite(LED_BUILTIN, LOW);
     BLE.stopScan();
+    Watchdog.reset();
+    Watchdog.disable();
 }
 
 void loop() {
@@ -309,7 +317,7 @@ void loop() {
         // rearm alarm
         if (millis() - lastTimerReset >= LOOP_STUCK_TIMER_DURATION_MS) {
             serialPrintln("Rearming stuck timer");
-            stuckTimer.restartTimer();
+            //stuckTimer.restartTimer();
             lastTimerReset = millis();
         }
         if (scanning) {
@@ -325,6 +333,7 @@ void loop() {
                 serialPrintln("Leaving scanning mode.");
                 serialPrint("Scan took (ms) ");
                 serialPrintln(millis() - scanStart);
+                //scanStuckTimer.stopTimer();
                 scanning = false;
                 deliveredDevicesToGateway = false;
             }
@@ -353,7 +362,7 @@ void loop() {
                 // time to go back to scan mode
                 scanning = true;
                 scanStart = millis();
-                scanStuckTimer.restartTimer();
+                //scanStuckTimer.restartTimer();
                 numScans = 1;
                 // need to clear previous findings
                 bleScans.clear();
