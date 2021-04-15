@@ -52,7 +52,7 @@ def main():
 
     global process_data_thread
     filter_macs = env_variables['filter_macs']
-    process_data_thread = ProcessReceivedData(mongo_uri, kafka_server, filter_macs)
+    process_data_thread = ProcessReceivedData(gateway_id, mongo_uri, kafka_server, filter_macs)
     process_data_thread.start()
 
     logging.debug('Starting dbus Application')

@@ -13,9 +13,11 @@ from deserialize import deserialize
 from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, mongo_url, kafka_server, filter_macs=None):
+    def __init__(self, gateway_id, mongo_url, kafka_server, filter_macs=None):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
+        self.gateway_id = gateway_id
+
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
         self.running = False
@@ -102,6 +104,11 @@ class ProcessReceivedData(Thread):
         self.scanner_queue.put_nowait(scanner_buffer)
 
     def publish_devices_to_kafka(self, scanner_devices):
+        scanner_devices['metadata'] = {
+            'registered_scanners': list(self.get_registered_scanners_ids_set()),
+            'gateway_id': self.gateway_id
+        }
+
         devices = json.loads(json.dumps(scanner_devices, default=str))
         self.kafka_producer.send(KAFKA_TOPIC, devices)
 
@@ -109,15 +116,26 @@ class ProcessReceivedData(Thread):
         logging.info('Shutting down ProcessData thread')
         self.running = False
     
+    def get_registered_scanners_mac_set(self):
+        registered_scanners_cursor = self.mongo_registered_scanners.find({})
+        result = set()
+        for scanner in registered_scanners_cursor:
+            result.add(scanner['scanner_mac'])
+        return result
+
+    def get_registered_scanners_ids_set(self):
+        registered_scanners_cursor = self.mongo_registered_scanners.find({})
+        result = set()
+        for scanner in registered_scanners_cursor:
+            result.add(scanner['scanner_id'])
+        return result
+
     def start_submiting_data(self):
         # TODO Logging
         print("Enabling data submission...")
 
         # get scanner mac addresses registrated on the past 10 min
-        scanner_macs = []
-        registered_scanners_cursor = self.mongo_registered_scanners.find({})
-        for scanner in registered_scanners_cursor:
-            scanner_macs += [list(scanner.keys())[0]]
+        scanner_macs = self.get_registered_scanners_mac_set()
 
         # Filter entries from mongo containing Scanners Mac Addresses
         filtered_entries = []
@@ -133,15 +151,16 @@ class ProcessReceivedData(Thread):
             else:
                 devices = entry['devices']
 
-            filtered_entries += [{
+            entry = {
                 'devices': devices,
                 'timestamp': entry['timestamp'],
                 'scanner_id': entry['scanner_id'],
-            }]
+            }
+            filtered_entries += [entry]
+
+            self.publish_devices_to_kafka(entry)
 
         self.mongo_submit_col.insert_many(filtered_entries)
         self.mongo_pre_process_col.drop()
 
-        self.publish_devices_to_kafka(filtered_entries)
-        
         self.submit_data = True
