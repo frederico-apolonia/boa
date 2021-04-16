@@ -4,8 +4,8 @@ import json
 import time
 
 from decouple import config
-from kafka import KafkaConsumer, consumer
-from pymongo import MongoClient, mongo_client
+from kafka import KafkaConsumer
+from pymongo import MongoClient
 
 KAFKA_TOPIC = 'sato-gateway'
 
@@ -17,6 +17,17 @@ def load_environment_variables():
     result['mongo_url'] = config('MONGO_URL')
     result['kafka_url'] = [config('KAFKA_URL')]
     return result
+
+def update_gateway_mongod_entry(gateways_col, metadata):
+    mongo_filter = {'gateway_id': int(metadata['gateway_id'])}
+    new_gateway_values = { '$set': {
+                                    'registered_scanners': metadata['registered_scanners'],
+                                    'num_registered_scanners': len(metadata['registered_scanners']),
+                                    'timestamp': metadata['timestamp']
+                                    } 
+                         }
+
+    gateways_col.update_one(mongo_filter, new_gateway_values)
 
 def main():
     env_variables = load_environment_variables()
@@ -35,7 +46,7 @@ def main():
         timestamp = time.time()
         metadata = scanner_values.pop('metadata')
         metadata['timestamp'] = datetime.datetime.fromtimestamp(timestamp)
-        gateway_metadata_col.insert_one(metadata)
+        update_gateway_mongod_entry(gateway_metadata_col, metadata)
 
 if __name__ == '__main__':
     exit(main())
