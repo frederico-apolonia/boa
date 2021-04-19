@@ -35,8 +35,8 @@ def main():
     mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(env_variables['mongo_user']), quote_plus(env_variables['mongo_password']), quote_plus(env_variables['mongo_url']))
     mongo_client = MongoClient(mongo_uri)
 
-    scanners_values_col = mongo_client['scanner-values']['values']
-    gateway_metadata_col = mongo_client['scanners-gateway']['metadata']
+    scanners_values_col = mongo_client['scanner_values']['raw']
+    gateway_metadata_col = mongo_client['scanners_gateway']['metadata']
 
     kafka_consumer = KafkaConsumer(KAFKA_TOPIC, bootstrap_servers=env_variables['kafka_url'])
     for msg in kafka_consumer:
