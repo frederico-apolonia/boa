@@ -303,6 +303,7 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
 void loop() {
     int lastTimerReset = millis();
     int numScans = 1;
+    int numRetrieveRegisteredScannersTries = 0;
     long lastScanInstant = millis();
     long currentTime;
     bool scanning = true;
@@ -314,12 +315,6 @@ void loop() {
     while (true)
     {
         currentTime = millis();
-        // rearm alarm
-        if (millis() - lastTimerReset >= LOOP_STUCK_TIMER_DURATION_MS) {
-            serialPrintln("Rearming stuck timer");
-            //stuckTimer.restartTimer();
-            lastTimerReset = millis();
-        }
         if (scanning) {
             if (numScans <= MAX_SCANS) {
                 if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
@@ -338,6 +333,7 @@ void loop() {
                 deliveredDevicesToGateway = false;
             }
         } else {
+            // retrieve registered scanners from gateway
             if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
                 BLEDevice gateway = scanForGateway(10000);
 
@@ -351,7 +347,16 @@ void loop() {
                 if (!getRegisteredScanners(gateway)) {
                     serialPrintln("Failed to get registered scanners!");
                     gateway.disconnect();
+                    numRetrieveRegisteredScannersTries++;
+                    /* If the scanner cannot connect to the gateway after 5 tries to retrieve scanners,
+                       then it should restart. */
+                    if (numRetrieveRegisteredScannersTries > 5) {
+                        Watchdog.enable(500);
+                        delay(501);
+                    }
                     continue;
+                } else {
+                    numRetrieveRegisteredScannersTries = 0;
                 }
 
                 gateway.disconnect();
@@ -368,6 +373,7 @@ void loop() {
                 bleScans.clear();
             } else {
                 if (!deliveredDevicesToGateway) {
+                    // send collected devices to nearest gateway
                     delay(1500);
                     deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
                     serialPrintln("Sent all devices to gateway?");
