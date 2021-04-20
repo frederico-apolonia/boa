@@ -30,7 +30,7 @@ def get_raw_col_begin_timestamp(raw_col):
     return raw_col.find({}).sort([('timestamp', pymongo.ASCENDING)])[0]['timestamp']
 
 def get_entries_between_timestamps(raw_col, from_timestamp, to_timestamp):
-    return raw_col.find({'timestamp': {'$gte': from_timestamp, '$lt': to_timestamp}}).distinct('scanner_id')
+    return raw_col.find({'timestamp': {'$gte': from_timestamp, '$lt': to_timestamp}})
 
 def kalman_filter_rssi_values(rssis):
     raise NotImplementedError
@@ -39,7 +39,7 @@ def average_rssi_values(rssis):
     num_values = 0
     sum_values = 0
 
-    while rssis[num_values] != 255 and num_values < 10:
+    while num_values < 10 and rssis[num_values] != -255:
         sum_values += rssis[num_values]
         num_values += 1
 
@@ -68,13 +68,14 @@ def pre_process_data_between_time(timestamp_begin, timestamp_end, raw_col, pre_p
         for device in scanner['devices'].keys():
             device_rssi_value = pre_process_func(scanner['devices'][device])
             if device not in result['devices']:
-                result['devices'][device] = [255] * 10 # take out the 10 from here
+                result['devices'][device] = [-255] * 10 # take out the 10 from here
             
             result['devices'][device][scanner_id - 1] = device_rssi_value
 
-    pre_process_col.insert_one(result)
+    if result['devices'].keys():
+        pre_process_col.insert_one(result)
 
-    return pre_process_col(timestamp_end, timestamp_end + datetime.timedelta(seconds=60), raw_col, pre_process_col)
+    return pre_process_data_between_time(timestamp_end, timestamp_end + datetime.timedelta(seconds=60), raw_col, pre_process_col)
 
 def has_pre_processed_entries(pre_process_col):
     '''
@@ -90,7 +91,7 @@ def main():
     mongo_client = MongoClient(mongo_uri)
 
     scanners_raw_values_col = mongo_client['scanner_values']['raw']
-    scanners_pre_process_values_col = mongo_client['scanner_values']
+    scanners_pre_process_values_col = mongo_client['scanner_values']['pre_process']
 
     # get first timestamp to begin pre-processing raw data input
     # TODO: what if there's no data to pre-process on raw?
@@ -105,3 +106,6 @@ def main():
         timestamp_begin = pre_process_data_between_time(timestamp_begin, timestamp_begin + time_between_start_end, scanners_raw_values_col, scanners_pre_process_values_col)
 
         time.sleep(60)
+
+if __name__ == '__main__':
+    exit(main())
