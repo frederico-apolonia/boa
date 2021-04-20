@@ -19,6 +19,7 @@ def load_environment_variables():
     return result
 
 def update_gateway_mongod_entry(gateways_col, metadata):
+    # FIXME: update not working...
     mongo_filter = {'gateway_id': int(metadata['gateway_id'])}
     new_gateway_values = { '$set': {
                                     'registered_scanners': metadata['registered_scanners'],
@@ -28,6 +29,10 @@ def update_gateway_mongod_entry(gateways_col, metadata):
                          }
 
     gateways_col.update_one(mongo_filter, new_gateway_values)
+
+def str_to_datetime(str_timestamp):
+    date_str_format = '%Y-%m-%d %H:%M:%S.%f'
+    return datetime.datetime.strptime(str_timestamp, date_str_format)
 
 def main():
     env_variables = load_environment_variables()
@@ -41,11 +46,13 @@ def main():
     kafka_consumer = KafkaConsumer(KAFKA_TOPIC, bootstrap_servers=env_variables['kafka_url'])
     for msg in kafka_consumer:
         scanner_values = json.loads(msg.value)
-        scanners_values_col.insert_one(scanner_values)
+        scanner_values_timestamp = str_to_datetime(scanner_values.pop('timestamp'))
+        scanner_values['timestamp'] = scanner_values_timestamp
 
         timestamp = time.time()
         metadata = scanner_values.pop('metadata')
         metadata['timestamp'] = datetime.datetime.fromtimestamp(timestamp)
+        scanners_values_col.insert_one(scanner_values)
         update_gateway_mongod_entry(gateway_metadata_col, metadata)
 
 if __name__ == '__main__':
