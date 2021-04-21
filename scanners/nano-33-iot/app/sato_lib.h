@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+const int NUM_SCANNER_PHASES_BEFORE_REBOOT = 10;
 const int MAX_SCANS = 10;
 const int SCAN_TIME = 1000; //ms
 const int TIME_BETWEEN_SCANS = 1000;

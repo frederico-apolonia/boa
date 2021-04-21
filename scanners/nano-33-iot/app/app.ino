@@ -16,13 +16,6 @@ const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
 
-/*
-// Timer
-SAMDTimer stuckTimer(TIMER_TC3);
-
-// Timer
-SAMDTimer scanStuckTimer(TIMER_TC3);
-*/
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
 
@@ -54,11 +47,6 @@ void turnOnBLEScan() {
         delay(750);
     }
 }
-
-/*void stuckTimerHandler() {
-    // reset board via watchdog after 1 second
-    Watchdog.enable(1000);
-}*/
 
 bool registerOnGateway(BLEDevice gateway) {
     if (!gateway.discoverAttributes()) {
@@ -242,21 +230,6 @@ void setup() {
         gateway.disconnect();
     }
     serialPrintln("Retrieved scanners from gateway and registered!");
-
-    /*
-    if (stuckTimer.attachInterruptInterval(LOOP_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
-        serialPrintln("Armed stuck timer.");
-    } else {
-        serialPrintln("Error while setting up stuck timer.");
-        while (true);
-    }
-
-    if (scanStuckTimer.attachInterruptInterval(SCAN_STUCK_TIMER_INTERVAL_MS * 1000, stuckTimerHandler)) {
-        serialPrintln("Armed scan stuck timer.");
-    } else {
-        serialPrintln("Error while setting up stuck timer.");
-        while (true);
-    }*/
 }
 
 void scanBLEDevices(int timeLimitMs, int maxArraySize) {
@@ -301,6 +274,10 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
 }
 
 void loop() {
+
+    // scanners run NUM_SCANNER_PHASES_BEFORE_REBOOT
+    int numScannerPhases = 1;
+
     int lastTimerReset = millis();
     int numScans = 1;
     int numRetrieveRegisteredScannersTries = 0;
@@ -328,8 +305,8 @@ void loop() {
                 serialPrintln("Leaving scanning mode.");
                 serialPrint("Scan took (ms) ");
                 serialPrintln(millis() - scanStart);
-                //scanStuckTimer.stopTimer();
                 scanning = false;
+                numScannerPhases++;
                 deliveredDevicesToGateway = false;
             }
         } else {
@@ -363,6 +340,10 @@ void loop() {
             }
 
             if (currentTime - lastScanInstant >= timeBetweenScans) {
+                if (numScannerPhases >= NUM_SCANNER_PHASES_BEFORE_REBOOT) {
+                    Watchdog.enable(500);
+                    delay(501);
+                }
                 serialPrintln("Going back to scan mode");
                 // time to go back to scan mode
                 scanning = true;
