@@ -1,6 +1,6 @@
 # Assunções: ter o número de scanners guardado numa variavel
 
-# 1. ir a pre_process e ir buscar qual o timestamp_end mais recente
+# 1. ir a merge_data e ir buscar qual o timestamp_end mais recente
 # 2. ir buscar todos os valores desde esse timestamp_end e mais 1 min
 # 3. fazer o pre-processamento
 # 4. inserir no pre-processamento (enviar pelo kafka também?)
@@ -14,6 +14,7 @@ from pymongo import MongoClient
 import pymongo
 
 NUM_SCANNERS = 10
+NUM_RSSI_SAMPLES = 10
 
 def load_environment_variables():
     result = {}
@@ -23,8 +24,8 @@ def load_environment_variables():
     result['mongo_url'] = config('MONGO_URL')
     return result
 
-def get_preprocess_col_begin_timestamp(pre_process_col):
-    return pre_process_col.find({}).sort([('timestamp_end', pymongo.DESCENDING)])[0]['timestamp_end']
+def get_merge_data_col_begin_timestamp(merge_data_col):
+    return merge_data_col.find({}).sort([('timestamp_end', pymongo.DESCENDING)])[0]['timestamp_end']
 
 def get_raw_col_begin_timestamp(raw_col):
     return raw_col.find({}).sort([('timestamp', pymongo.ASCENDING)])[0]['timestamp']
@@ -32,56 +33,47 @@ def get_raw_col_begin_timestamp(raw_col):
 def get_entries_between_timestamps(raw_col, from_timestamp, to_timestamp):
     return raw_col.find({'timestamp': {'$gte': from_timestamp, '$lt': to_timestamp}})
 
-def kalman_filter_rssi_values(rssis):
-    raise NotImplementedError
-
-def average_rssi_values(rssis):
-    num_values = 0
-    sum_values = 0
-
-    while num_values < 10 and rssis[num_values] != -255:
-        sum_values += rssis[num_values]
-        num_values += 1
-
-    return int(sum_values/(num_values + 1))
-
-def pre_process_data_between_time(timestamp_begin, timestamp_end, raw_col, pre_process_col, pre_process_func=average_rssi_values):
+def merge_data_data_between_time(timestamp_begin, raw_col, merge_data_col):
     '''
-    Pre processes different scanner entries between timestamp_begin and timestamp_end at raw_col with pre_process_func and saves them at pre_process_col
+    Pre processes different scanner entries between timestamp_begin and timestamp_end at raw_col with merge_data_func and saves them at merge_data_col
     '''
     now = datetime.datetime.now()
+    minute = datetime.timedelta(seconds=60)
+    timestamp_end = timestamp_begin + minute
 
-    # recursion base, if is closer than 300 seconds to now, don't process more data
-    if now - timestamp_begin < datetime.timedelta(seconds=300):
-        return timestamp_begin
+    while now - timestamp_begin >= datetime.timedelta(seconds=90):
+        scanners_cursor = get_entries_between_timestamps(raw_col, timestamp_begin, timestamp_end)
 
-    scanners_cursor = get_entries_between_timestamps(raw_col, timestamp_begin, timestamp_end)
+        result = {
+            'timestamp_begin': timestamp_begin,
+            'timestamp_end': timestamp_end,
+            'devices': {},
+        }
 
-    result = {
-        'timestamp_begin': timestamp_begin,
-        'timestamp_end': timestamp_end,
-        'devices': {},
-    }
+        for scanner in scanners_cursor:
+            scanner_id = scanner['scanner_id']
+            for device in scanner['devices'].keys():
+                device_rssi_values = scanner['devices'][device]
+                if device not in result['devices']:
+                    result['devices'][device] = [[-255] * NUM_SCANNERS] * NUM_RSSI_SAMPLES
+                
+                for i in range(0, NUM_RSSI_SAMPLES):
+                    result['devices'][device][i][scanner_id - 1] = device_rssi_values[i]
 
-    for scanner in scanners_cursor:
-        scanner_id = scanner['scanner_id']
-        for device in scanner['devices'].keys():
-            device_rssi_value = pre_process_func(scanner['devices'][device])
-            if device not in result['devices']:
-                result['devices'][device] = [-255] * 10 # take out the 10 from here
-            
-            result['devices'][device][scanner_id - 1] = device_rssi_value
+        if result['devices'].keys():
+            merge_data_col.insert_one(result)
 
-    if result['devices'].keys():
-        pre_process_col.insert_one(result)
+        now = datetime.datetime.now()
+        timestamp_begin = timestamp_end
+        timestamp_end = timestamp_begin + minute
 
-    return pre_process_data_between_time(timestamp_end, timestamp_end + datetime.timedelta(seconds=60), raw_col, pre_process_col)
+    return timestamp_begin
 
-def has_pre_processed_entries(pre_process_col):
+def has_merge_dataed_entries(merge_data_col):
     '''
     Checks if Pre Process collection has any pre-processed scanner entry
     '''
-    return pre_process_col.count_documents({}) != 0
+    return merge_data_col.count_documents({}) != 0
 
 def main():
     env_variables = load_environment_variables()
@@ -91,19 +83,19 @@ def main():
     mongo_client = MongoClient(mongo_uri)
 
     scanners_raw_values_col = mongo_client['scanner_values']['raw']
-    scanners_pre_process_values_col = mongo_client['scanner_values']['pre_process']
+    scanners_merge_data_values_col = mongo_client['scanner_values']['merge_data']
 
     # get first timestamp to begin pre-processing raw data input
     # TODO: what if there's no data to pre-process on raw?
-    if not has_pre_processed_entries(scanners_pre_process_values_col):
+    if not has_merge_dataed_entries(scanners_merge_data_values_col):
         timestamp_begin = get_raw_col_begin_timestamp(scanners_raw_values_col)
     else:
-        timestamp_begin = get_preprocess_col_begin_timestamp(scanners_pre_process_values_col)
+        timestamp_begin = get_merge_data_col_begin_timestamp(scanners_merge_data_values_col)
 
     time_between_start_end = datetime.timedelta(seconds=60)
     # process every X time
     while True:
-        timestamp_begin = pre_process_data_between_time(timestamp_begin, timestamp_begin + time_between_start_end, scanners_raw_values_col, scanners_pre_process_values_col)
+        timestamp_begin = merge_data_data_between_time(timestamp_begin, scanners_raw_values_col, scanners_merge_data_values_col)
 
         time.sleep(60)
 
