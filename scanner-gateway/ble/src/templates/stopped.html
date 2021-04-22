@@ -1,0 +1,18 @@
+<!doctype html>
+<title>SATO GATEWAY DATA COLLECTOR</title>
+<h1>SATO GATEWAY DATA COLLECTOR STOPPED</h1>
+<form action="{{ url_for('running') }}" method="post">
+  <label for="posx">Pos x:</label><br>
+  <input type="text" id="posx" name="posx"><br>
+
+  <label for="posy">Pos y:</label><br>
+  <input type="text" id="posy" name="posy"><br>
+
+  <label for="posz">Pos z:</label><br>
+  <input type="text" id="posz" name="posz"><br>
+
+  <label for="macs">MACs:</label><br>
+  <input type="text" id="macs" name="macs">
+
+  <input type="submit" value="Start"/>
+</form>

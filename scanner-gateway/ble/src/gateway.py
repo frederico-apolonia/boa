@@ -1,10 +1,12 @@
 import _thread
 from threading import Timer
+import threading
 from urllib.parse import quote_plus
 import dbus
 import logging
 
 from decouple import config
+from pymongo import MongoClient
 from kafka import KafkaConsumer
 
 from ble_server import Application
@@ -24,12 +26,7 @@ def load_environment_variables():
     result['mongo_password'] = config('MONGO_PASSWORD')
     result['kafka_url'] = [config('KAFKA_URL')]
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
-    # TODO: Arranjar uma forma de alterar isto mais dinamicamente
-    filter_macs = config('FILTER_MACS', default=None)
-    if filter_macs:
-        result['filter_macs'] = filter_macs.lower().split(',')
-    else:
-        result['filter_macs'] = None
+    result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
@@ -37,6 +34,24 @@ def salt_kafka_consumer(kafka_url, process_data_thread):
     consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
     for msg in consumer:
         process_data_thread.set_salt_value(msg.value)
+
+def mongo_collecting_start_stop(mongo_url, process_data_thread):
+    print(mongo_url)
+    mongo_client = MongoClient(mongo_url)
+    col = mongo_client['collecting']['data']
+    while True:
+        train_command = col.find_one({})
+        if train_command:
+            if train_command['command'] == 'start':
+                filter_macs = train_command['filter_macs']
+                location = train_command['location']
+                process_data_thread.training_start(filter_macs, location)
+                print(f'{filter_macs}, {location}')
+            else:
+                process_data_thread.training_stop()
+            
+            # remove entry from mongod
+            col.delete_one({'_id': train_command['_id']})
 
 def main():
     # initialize logging
@@ -51,9 +66,13 @@ def main():
     gateway_id = env_variables['gateway_id']
 
     global process_data_thread
-    filter_macs = env_variables['filter_macs']
+    filter_macs = env_variables['training_mode']
     process_data_thread = ProcessReceivedData(gateway_id, mongo_uri, kafka_server, filter_macs)
     process_data_thread.start()
+
+    if env_variables['training_mode']:
+        mongo_collecting_thread = threading.Thread(target=mongo_collecting_start_stop, args=(mongo_uri, process_data_thread))
+        mongo_collecting_thread.start()
 
     logging.debug('Starting dbus Application')
     app = Application()
@@ -78,7 +97,9 @@ def main():
         app.quit()
         process_data_thread.stop()
         process_data_thread.join()
-        
+        if env_variables['training_mode']:
+            mongo_training.join()
+            mongo_training.stop()
 
 if __name__ == '__main__':
     exit(main())

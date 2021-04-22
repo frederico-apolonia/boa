@@ -13,7 +13,7 @@ from deserialize import deserialize
 from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, gateway_id, mongo_url, kafka_server, filter_macs=None):
+    def __init__(self, gateway_id, mongo_url, kafka_server, training_mode=False):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
         self.gateway_id = gateway_id
@@ -23,8 +23,11 @@ class ProcessReceivedData(Thread):
         self.running = False
         self.submit_data = False
 
-        # save macs to be filtered
-        self.filter_macs = filter_macs
+        # Training mode variables
+        self.training_mode = training_mode
+        self.training_accept_data = False
+        self.filter_macs = None
+        self.training_location = None
 
         # init pymongo connection and save the collection access
         self.mongo_client = MongoClient(mongo_url)
@@ -39,6 +42,16 @@ class ProcessReceivedData(Thread):
         # init salt variable
         self.salt = None
         self.salt_lock = Lock()
+
+    def training_start(self, filter_macs, training_location):
+        self.training_accept_data = True
+        self.filter_macs = filter_macs
+        self.training_location = training_location
+
+    def training_stop(self):
+        self.training_accept_data = False
+        self.filter_macs = None
+        self.training_location = None
 
     def set_salt_value(self, salt_value):
         def set_salt_value_thread(salt_value):
@@ -56,13 +69,18 @@ class ProcessReceivedData(Thread):
         self.running = True
         while self.running:
             scanner_buffer = self.scanner_queue.get(block=True, timeout=None)
+            # if training mode is enabled and gateway is currently not accepting data
+            # then the received data is discarted
+            if self.training_mode and not self.training_accept_data:
+                continue
+
             logging.info(f"Processing scanner values")
             scanner_devices = deserialize(scanner_buffer)
             
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
 
-            if self.filter_macs:
+            if self.training_mode and self.filter_macs:
                 # if we only want to register some MAC addresses, filter them
                 filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_macs} 
                 scanner_devices['devices'] = filtered_devices
@@ -91,6 +109,14 @@ class ProcessReceivedData(Thread):
                 scanner_devices['scanner_id'] = scanner_id
 
                 logging.info(f'Sending batch from scanner to mongo {scanner_id} lastly received at {timestamp} with {len(scanner_devices["devices"])}')
+                if self.training_mode and self.training_location:
+                    logging.info(f'TRAINING_MODE: Adding location {self.training_location} to data')
+                    scanner_devices['location'] = {
+                        'x': self.training_location[0],
+                        'y': self.training_location[1],
+                        'z': self.training_location[2],
+                    }
+
                 if self.submit_data:
                     self.mongo_submit_col.insert_one(scanner_devices)
                     self.publish_devices_to_kafka(scanner_devices)
