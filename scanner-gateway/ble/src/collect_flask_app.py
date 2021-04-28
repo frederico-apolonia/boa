@@ -11,7 +11,7 @@ mongo_password = config('MONGO_PASSWORD')
 
 mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(mongo_user), quote_plus(mongo_password), quote_plus("localhost:27017"))
 mongo_client = MongoClient(mongo_uri)
-col = mongo_client['training']['data']
+col = mongo_client['collecting']['data']
 
 @app.route('/', methods=['GET', 'POST'])
 def stopped():

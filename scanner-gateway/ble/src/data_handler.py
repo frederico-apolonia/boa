@@ -168,7 +168,7 @@ class ProcessReceivedData(Thread):
         cursor = self.mongo_pre_process_col.find({})
         for entry in cursor:
             devices = {}
-            if not self.filter_macs:
+            if not self.training_mode:
                 with self.salt_lock:
                     for mac_address in entry['devices'].keys():
                         if mac_address not in scanner_macs:
@@ -187,6 +187,6 @@ class ProcessReceivedData(Thread):
             self.publish_devices_to_kafka(entry)
 
         self.mongo_submit_col.insert_many(filtered_entries)
-        self.mongo_pre_process_col.drop()
+        #self.mongo_pre_process_col.drop()
 
         self.submit_data = True

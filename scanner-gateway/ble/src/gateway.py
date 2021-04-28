@@ -27,6 +27,7 @@ def load_environment_variables():
     result['kafka_url'] = [config('KAFKA_URL')]
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
+    print(result['collecting_mode'])
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
@@ -36,7 +37,6 @@ def salt_kafka_consumer(kafka_url, process_data_thread):
         process_data_thread.set_salt_value(msg.value)
 
 def mongo_collecting_start_stop(mongo_url, process_data_thread):
-    print(mongo_url)
     mongo_client = MongoClient(mongo_url)
     col = mongo_client['collecting']['data']
     while True:
@@ -66,11 +66,11 @@ def main():
     gateway_id = env_variables['gateway_id']
 
     global process_data_thread
-    filter_macs = env_variables['training_mode']
+    filter_macs = env_variables['collecting_mode']
     process_data_thread = ProcessReceivedData(gateway_id, mongo_uri, kafka_server, filter_macs)
     process_data_thread.start()
 
-    if env_variables['training_mode']:
+    if env_variables['collecting_mode']:
         mongo_collecting_thread = threading.Thread(target=mongo_collecting_start_stop, args=(mongo_uri, process_data_thread))
         mongo_collecting_thread.start()
 
@@ -97,7 +97,7 @@ def main():
         app.quit()
         process_data_thread.stop()
         process_data_thread.join()
-        if env_variables['training_mode']:
+        if env_variables['collecting_mode']:
             mongo_training.join()
             mongo_training.stop()
 
