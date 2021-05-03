@@ -13,7 +13,7 @@ from decouple import config
 from pymongo import MongoClient
 import pymongo
 
-NUM_SCANNERS = 10
+NUM_SCANNERS = 4
 NUM_RSSI_SAMPLES = 10
 
 def load_environment_variables():
@@ -33,6 +33,16 @@ def get_raw_col_begin_timestamp(raw_col):
 def get_entries_between_timestamps(raw_col, from_timestamp, to_timestamp):
     return raw_col.find({'timestamp': {'$gte': from_timestamp, '$lt': to_timestamp}})
 
+def join_lists(l1, l2):
+    result = [-255] * NUM_SCANNERS
+    for i in range(0, NUM_SCANNERS):
+        if l1[i] != -255:
+            result[i] = l1[i]
+        elif l2[i] != -255:
+            result[i] = l2[i]
+    
+    return result
+
 def merge_data_data_between_time(timestamp_begin, raw_col, merge_data_col):
     '''
     Pre processes different scanner entries between timestamp_begin and timestamp_end at raw_col with merge_data_func and saves them at merge_data_col
@@ -51,14 +61,19 @@ def merge_data_data_between_time(timestamp_begin, raw_col, merge_data_col):
         }
 
         for scanner in scanners_cursor:
+            if 'location' not in result.keys():
+                result['location'] = scanner['location']
             scanner_id = scanner['scanner_id']
+            array_pos = scanner_id - 1
             for device in scanner['devices'].keys():
                 device_rssi_values = scanner['devices'][device]
                 if device not in result['devices']:
                     result['devices'][device] = [[-255] * NUM_SCANNERS] * NUM_RSSI_SAMPLES
                 
                 for i in range(0, NUM_RSSI_SAMPLES):
-                    result['devices'][device][i][scanner_id - 1] = device_rssi_values[i]
+                    device_rssis = result['devices'][device][i]
+                    device_rssis[array_pos] = device_rssi_values[i]
+                    result['devices'][device][i] = join_lists(device_rssis, result['devices'][device][i])
 
         if result['devices'].keys():
             merge_data_col.insert_one(result)
@@ -66,7 +81,6 @@ def merge_data_data_between_time(timestamp_begin, raw_col, merge_data_col):
         now = datetime.datetime.now()
         timestamp_begin = timestamp_end
         timestamp_end = timestamp_begin + minute
-
     return timestamp_begin
 
 def has_merge_dataed_entries(merge_data_col):
