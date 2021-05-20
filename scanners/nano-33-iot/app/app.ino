@@ -1,10 +1,11 @@
 #include <Arduino.h>
 #include <ArduinoBLE.h>
 #include <ArduinoJson.h>
-#include <Adafruit_SleepyDog.h>
 
 #include "sato_lib.h"
-#include "SAMDTimerInterrupt.h"
+#include "WDTZero.h"
+
+WDTZero watchdog; // Define WDT
 
 const short SCANNER_ID = 2;
 
@@ -15,6 +16,17 @@ const char* GATEWAY_WRITE_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe5";
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
+
+int lastTimerReset = millis();
+int numScans = 1;
+int numRetrieveRegisteredScannersTries = 0;
+long lastScanInstant = millis();
+long currentTime;
+bool scanning = true;
+bool deliveredDevicesToGateway = false;
+long scanStart = millis();
+
+int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
 /* Json to store data collected from BLE Scanner, supports 64 devices */
 StaticJsonDocument<11264> bleScans;
@@ -132,7 +144,6 @@ BLEDevice scanForGateway(int maxScanTime) {
     serialPrintln("Searching for a gateway");
     
     serialPrintln("Activating BLE Scan");
-    Watchdog.enable(16000);
     turnOnBLEScan();
     delay(1500);
     
@@ -173,9 +184,11 @@ BLEDevice scanForGateway(int maxScanTime) {
     serialPrint("End of scanning, got gateway? ");
     serialPrintln(found);
     BLE.stopScan();
-    Watchdog.reset();
-    Watchdog.disable();
     return result;
+}
+
+void myshutdown() {
+    serialPrintln("\nWe gonna shutdown!...");
 }
 
 void setup() {
@@ -184,10 +197,13 @@ void setup() {
      * transmit at 9600 bps
      */
     if (DEBUG) {
-        Serial.begin(9600);
+        Serial.begin(115200);
         while(!Serial);
     }
 
+    watchdog.attachShutdown(myshutdown);
+    watchdog.setup(WDT_SOFTCYCLE32S);  // initialize WDT-softcounter refesh cycle on 32sec interval
+    watchdog.clear();  // refresh wdt - before it loops
     // initialize LED to visually indicate the scan
     pinMode(LED_BUILTIN, OUTPUT);
 
@@ -204,6 +220,7 @@ void setup() {
     bool result = false;
     
     while(!result) {
+        watchdog.clear();  // refresh wdt - before it loops
         BLEDevice gateway = scanForGateway(10000);
 
         if(!gateway.connected()) {
@@ -236,7 +253,6 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     digitalWrite(LED_BUILTIN, HIGH);
     long startingTime = millis();
 
-    Watchdog.enable(timeLimitMs + 1000);
     turnOnBLEScan();
     BLEDevice peripheral;
     int macIsScanner = -1;
@@ -269,99 +285,71 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
     }
     digitalWrite(LED_BUILTIN, LOW);
     BLE.stopScan();
-    Watchdog.reset();
-    Watchdog.disable();
 }
 
 void loop() {
-
-    // scanners run NUM_SCANNER_PHASES_BEFORE_REBOOT
-    int numScannerPhases = 1;
-
-    int lastTimerReset = millis();
-    int numScans = 1;
-    int numRetrieveRegisteredScannersTries = 0;
-    long lastScanInstant = millis();
-    long currentTime;
-    bool scanning = true;
-    bool deliveredDevicesToGateway = false;
-    long scanStart = millis();
-
-    int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
-
-    while (true)
-    {
-        currentTime = millis();
-        if (scanning) {
-            if (numScans <= MAX_SCANS) {
-                if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
-                    serialPrintln("Scanning for devices...");
-                    scanBLEDevices(SCAN_TIME, numScans);
-                    lastScanInstant = millis();
-                    numScans++;
-                    serialPrintln("Scanning ended");
-                }
-            } else {
-                serialPrintln("Leaving scanning mode.");
-                serialPrint("Scan took (ms) ");
-                serialPrintln(millis() - scanStart);
-                scanning = false;
-                numScannerPhases++;
-                deliveredDevicesToGateway = false;
+    currentTime = millis();
+    watchdog.clear();
+    if (scanning) {
+        if (numScans <= MAX_SCANS) {
+            if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
+                serialPrintln("Scanning for devices...");
+                scanBLEDevices(SCAN_TIME, numScans);
+                lastScanInstant = millis();
+                numScans++;
+                serialPrintln("Scanning ended");
             }
         } else {
-            // retrieve registered scanners from gateway
-            if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
-                BLEDevice gateway = scanForGateway(10000);
+            serialPrintln("Leaving scanning mode.");
+            serialPrint("Scan took (ms) ");
+            serialPrintln(millis() - scanStart);
+            scanning = false;
+            deliveredDevicesToGateway = false;
+        }
+    } else {
+        // retrieve registered scanners from gateway
+        if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
+            BLEDevice gateway = scanForGateway(10000);
 
-                if(!gateway.connected()) {
-                    serialPrintln("Failed to connect.");
-                    continue;
-                }
-
-                serialPrintln("Connected to gateway");
-
-                if (!getRegisteredScanners(gateway)) {
-                    serialPrintln("Failed to get registered scanners!");
-                    gateway.disconnect();
-                    numRetrieveRegisteredScannersTries++;
-                    /* If the scanner cannot connect to the gateway after 5 tries to retrieve scanners,
-                       then it should restart. */
-                    if (numRetrieveRegisteredScannersTries > 5) {
-                        Watchdog.enable(500);
-                        delay(501);
-                    }
-                    continue;
-                } else {
-                    numRetrieveRegisteredScannersTries = 0;
-                }
-
-                gateway.disconnect();
+            if(!gateway.connected()) {
+                serialPrintln("Failed to connect.");
+                return;
             }
 
-            if (currentTime - lastScanInstant >= timeBetweenScans) {
-                if (numScannerPhases >= NUM_SCANNER_PHASES_BEFORE_REBOOT) {
-                    Watchdog.enable(500);
-                    delay(501);
-                }
-                serialPrintln("Going back to scan mode");
-                // time to go back to scan mode
-                scanning = true;
-                scanStart = millis();
-                //scanStuckTimer.restartTimer();
-                numScans = 1;
-                // need to clear previous findings
-                bleScans.clear();
+            serialPrintln("Connected to gateway");
+
+            if (!getRegisteredScanners(gateway)) {
+                serialPrintln("Failed to get registered scanners!");
+                gateway.disconnect();
+                numRetrieveRegisteredScannersTries++;
+                /* If the scanner cannot connect to the gateway after 5 tries to retrieve scanners,
+                    then it should restart. */
+                return;
             } else {
+                numRetrieveRegisteredScannersTries = 0;
+            }
+
+            gateway.disconnect();
+        }
+
+        if (currentTime - lastScanInstant >= timeBetweenScans) {
+            serialPrintln("Going back to scan mode");
+            // time to go back to scan mode
+            scanning = true;
+            scanStart = millis();
+            //scanStuckTimer.restartTimer();
+            numScans = 1;
+            // need to clear previous findings
+            bleScans.clear();
+        } else {
+            if (!deliveredDevicesToGateway) {
+                // send collected devices to nearest gateway
+                delay(1500);
+                deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
+                serialPrintln("Sent all devices to gateway?");
+                serialPrintln(deliveredDevicesToGateway);
                 if (!deliveredDevicesToGateway) {
-                    // send collected devices to nearest gateway
-                    delay(1500);
-                    deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
-                    serialPrintln("Sent all devices to gateway?");
-                    serialPrintln(deliveredDevicesToGateway);
-                    if (!deliveredDevicesToGateway) {
-                        BLE.stopScan();
-                    }
+                    BLE.stopScan();
                 }
             }
         }
