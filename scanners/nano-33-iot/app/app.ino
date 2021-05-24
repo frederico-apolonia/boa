@@ -112,8 +112,9 @@ bool getRegisteredScanners(BLEDevice gateway) {
         registeredScannersCharacteristic.readValue(scannersBuffer, receivingBytes);
         
         /* deserialize received values */
+        byte *addressBytes;
         for(int i = 0; i < numScanners; i++) {
-            byte addressBytes[MAC_ADDRESS_SIZE_BYTES];
+            addressBytes = (byte*) malloc(MAC_ADDRESS_SIZE_BYTES * sizeof(byte));
             for(int k = 0; k < MAC_ADDRESS_SIZE_BYTES; k++) {
                 addressBytes[k] = scannersBuffer[k + MAC_ADDRESS_SIZE_BYTES * i];
             }
@@ -129,6 +130,9 @@ bool getRegisteredScanners(BLEDevice gateway) {
                 serialPrintln("New scanner received, appending to the end of the list");
                 append(knownScanners, addressBytes);
                 numKnownScanners++;
+            } else {
+                serialPrintln("Scanner already known, continuing...");
+                free(addressBytes);
             }
         }
     }
