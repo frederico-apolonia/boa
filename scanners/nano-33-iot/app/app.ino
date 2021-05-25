@@ -25,6 +25,7 @@ long currentTime;
 bool scanning = true;
 bool deliveredDevicesToGateway = false;
 long scanStart = millis();
+BLEDevice gateway;
 
 int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
@@ -39,7 +40,7 @@ int numKnownScanners = 0;
 node_t* knownScanners;
 long lastKnownScannersRetrievalInstant;
 
-const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 300000;
+const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 1200000;
 
 template <class T> void serialPrintln(T value) {
     if (DEBUG) {
@@ -313,7 +314,7 @@ void loop() {
     } else {
         // retrieve registered scanners from gateway
         if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
-            BLEDevice gateway = scanForGateway(10000);
+            gateway = scanForGateway(10000);
 
             if(!gateway.connected()) {
                 serialPrintln("Failed to connect.");
@@ -345,21 +346,31 @@ void loop() {
             numScans = 1;
             // need to clear previous findings
             bleScans.clear();
+            
+            serialPrintln("L350 Checking if BLE is started ...");
+            while (!BLE.begin()) {
+                serialPrint(". ");
+                delay(100);
+            }
         } else {
             if (!deliveredDevicesToGateway) {
+                serialPrintln("L357 Checking if BLE is started ...");
+                while (!BLE.begin()) {
+                    serialPrint(". ");
+                    delay(100);
+                }
                 // send collected devices to nearest gateway
                 delay(1500);
-                BLEDevice gateway = scanForGateway(10000);
+                gateway = scanForGateway(10000);
                 if (gateway) {
                     deliveredDevicesToGateway = writeDevicesOnGateway(gateway);
                 }
                 /*deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);*/
                 serialPrintln("Sent all devices to gateway?");
                 serialPrintln(deliveredDevicesToGateway);
-                if (!deliveredDevicesToGateway) {
-                    BLE.stopScan();
-                }
             }
+            BLE.end();
+            delay(250);
         }
     }
 }
@@ -376,12 +387,12 @@ bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
     return false;
 }
 
-bool writeDevicesOnGateway(BLEDevice peripheral) {
-    BLECharacteristic writeCharacteristic = peripheral.characteristic(GATEWAY_WRITE_CHAR_UUID);
+bool writeDevicesOnGateway(BLEDevice gateway) {
+    BLECharacteristic writeCharacteristic = gateway.characteristic(GATEWAY_WRITE_CHAR_UUID);
 
     if (!writeCharacteristic) {
         serialPrintln("Device doesn't have write char!");
-        peripheral.disconnect();
+        gateway.disconnect();
         return false;
     }
 
@@ -457,7 +468,7 @@ bool writeDevicesOnGateway(BLEDevice peripheral) {
     }
     
     rssisJsonObject.clear();
-    peripheral.disconnect();
+    gateway.disconnect();
     return true;
 }
 
