@@ -349,7 +349,11 @@ void loop() {
             if (!deliveredDevicesToGateway) {
                 // send collected devices to nearest gateway
                 delay(1500);
-                deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);
+                BLEDevice gateway = scanForGateway(10000);
+                if (gateway) {
+                    deliveredDevicesToGateway = writeDevicesOnGateway(gateway);
+                }
+                /*deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);*/
                 serialPrintln("Sent all devices to gateway?");
                 serialPrintln(deliveredDevicesToGateway);
                 if (!deliveredDevicesToGateway) {
@@ -360,6 +364,7 @@ void loop() {
     }
 }
 
+// TODO: remover, não é usado
 bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
     BLEDevice gateway;
     while(millis() - startingTime <= timeBetweenScans) {
