@@ -28,7 +28,6 @@ bool scanning = true;
 bool deliveredDevicesToGateway = false;
 long scanStart = millis();
 int scanEndDelayDelta = 0;
-BLEDevice gateway;
 
 int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
@@ -42,6 +41,10 @@ JsonObject rssisJsonObject;
 int numKnownScanners = 0;
 node_t* knownScanners;
 long lastKnownScannersRetrievalInstant;
+
+/* BLE objects */
+BLEDevice gateway;
+BLECharacteristic readCharacteristic;
 
 const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 1200000;
 
@@ -64,7 +67,7 @@ void turnOnBLEScan() {
     }
 }
 
-bool registerOnGateway(BLEDevice gateway) {
+bool registerOnGateway() {
     if (!gateway.discoverAttributes()) {
         serialPrintln("Couldn't discover gateway characteristics.");
         gateway.disconnect();
@@ -83,25 +86,26 @@ bool registerOnGateway(BLEDevice gateway) {
     return true;
 }
 
-bool getRegisteredScanners(BLEDevice gateway) {
+/* FIXME: descartar a lista toda e criar nova lista com todos os dispositivos recebidos */
+bool getRegisteredScanners() {
     serialPrintln("Getting number of registered scanners...");
-    BLECharacteristic numberRegisteredScannersCharacteristic = gateway.characteristic(GATEWAY_READ_NUM_SCANNERS_CHAR_UUID);
+    readCharacteristic = gateway.characteristic(GATEWAY_READ_NUM_SCANNERS_CHAR_UUID);
 
-    if (!numberRegisteredScannersCharacteristic) {
+    if (!readCharacteristic) {
         serialPrintln("Device doesn't have number registered scanners read char!");
         gateway.disconnect();
         return false;
     }
 
     int32_t numScanners;
-    numberRegisteredScannersCharacteristic.readValue(numScanners);
+    readCharacteristic.readValue(numScanners);
     serialPrint("Number of registered scanners: ");
     serialPrintln(numScanners);
 
     byte scannersBuffer[numScanners*MAC_ADDRESS_SIZE_BYTES];
-    BLECharacteristic registeredScannersCharacteristic = gateway.characteristic(GATEWAY_READ_SCANNERS_CHAR_UUID);
+    readCharacteristic = gateway.characteristic(GATEWAY_READ_SCANNERS_CHAR_UUID);
 
-    if (!registeredScannersCharacteristic) {
+    if (!readCharacteristic) {
         serialPrintln("Device doesn't have registered scanners read char!");
         gateway.disconnect();
         return false;
@@ -113,7 +117,7 @@ bool getRegisteredScanners(BLEDevice gateway) {
         serialPrint(receivingBytes);
         serialPrintln(" bytes from gateway...");
 
-        registeredScannersCharacteristic.readValue(scannersBuffer, receivingBytes);
+        readCharacteristic.readValue(scannersBuffer, receivingBytes);
         
         /* deserialize received values */
         byte *addressBytes;
@@ -235,14 +239,14 @@ void setup() {
 
         serialPrintln("Connected to gateway");
 
-        result = getRegisteredScanners(gateway) || result;
+        result = getRegisteredScanners() || result;
         if (!result) {
             serialPrintln("Failed to get registered scanners!");
             gateway.disconnect();
             continue;
         }
 
-        result = registerOnGateway(gateway) || result;
+        result = registerOnGateway() || result;
         if (!result) {
             serialPrintln("Failed to register gateway!");
             gateway.disconnect();
@@ -321,15 +325,12 @@ void loop() {
 
             serialPrintln("Connected to gateway");
 
-            if (!getRegisteredScanners(gateway)) {
+            if (!getRegisteredScanners()) {
                 serialPrintln("Failed to get registered scanners!");
                 gateway.disconnect();
                 numRetrieveRegisteredScannersTries++;
                 /* If the scanner cannot connect to the gateway after 5 tries to retrieve scanners,
                     then it should restart. */
-                if (numRetrieveRegisteredScannersTries > 5) {
-                    delay(33000);
-                }
                 return;
             } else {
                 numRetrieveRegisteredScannersTries = 0;
@@ -364,7 +365,7 @@ void loop() {
                 // send collected devices to nearest gateway
                 delay(1500);
                 if (scanForGateway(10000)) {
-                    deliveredDevicesToGateway = writeDevicesOnGateway(gateway);
+                    deliveredDevicesToGateway = writeDevicesOnGateway();
                 }
                 /*deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);*/
                 serialPrintln("Sent all devices to gateway?");
@@ -377,21 +378,10 @@ void loop() {
     }
 }
 
-// TODO: remover, não é usado
-bool findGatewayAndSendDevices(long startingTime, int timeBetweenScans) {
-    BLEDevice gateway;
-    while(millis() - startingTime <= timeBetweenScans) {
-        if (scanForGateway(10000)) {
-            return writeDevicesOnGateway(gateway);
-        }
-    }
-    return false;
-}
+bool writeDevicesOnGateway() {
+    readCharacteristic = gateway.characteristic(GATEWAY_WRITE_CHAR_UUID);
 
-bool writeDevicesOnGateway(BLEDevice gateway) {
-    BLECharacteristic writeCharacteristic = gateway.characteristic(GATEWAY_WRITE_CHAR_UUID);
-
-    if (!writeCharacteristic) {
+    if (!readCharacteristic) {
         serialPrintln("Device doesn't have write char!");
         gateway.disconnect();
         return false;
@@ -452,8 +442,7 @@ bool writeDevicesOnGateway(BLEDevice gateway) {
         if (bufferPos == currBuffSize) {
             serialPrintln("Writing value to characteristic...");
             /* if so, we write the buffer on the characteristic */
-            writeCharacteristic.writeValue(buffer, bufferPos);
-            serialPrintln("Writen on characteristic.");
+            readCharacteristic.writeValue(buffer, bufferPos);
 
             currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
             currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
@@ -467,6 +456,7 @@ bool writeDevicesOnGateway(BLEDevice gateway) {
             buffer[bufferPos] = (byte) SCANNER_ID;
             bufferPos++;
         }
+        // rssis.clear(); LIMPAR A MEMÓRIA
     }
     
     rssisJsonObject.clear();
