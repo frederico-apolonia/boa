@@ -4,7 +4,7 @@ import json
 import time
 
 from decouple import config
-from kafka import KafkaConsumer
+#from kafka import KafkaConsumer
 from pymongo import MongoClient
 
 def load_environment_variables():
@@ -20,7 +20,7 @@ env_variables = load_environment_variables()
 mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(env_variables['mongo_user']), quote_plus(env_variables['mongo_password']), quote_plus(env_variables['mongo_url']))
 mongo_client = MongoClient(mongo_uri)
 
-scanners_merge_data_values_col = mongo_client['scanner_values']['pre_process']
+scanners_merge_data_values_col = mongo_client['scanner_values']['merge_data']
 
 all_data = scanners_merge_data_values_col.find({})
 
@@ -36,4 +36,5 @@ with open('labeled.csv', 'w') as file:
 
         for device in entry['devices'].keys():
             rssis = entry['devices'][device]
-            file.write(f'{x},{y},{z},{date},{rssis[0]},{rssis[1]},{rssis[2]},{rssis[3]}\n')
+            for vector in rssis:
+                file.write(f'{x},{y},{z},{date},{vector[0]},{vector[1]},{vector[2]},{vector[3]}\n')
