@@ -86,8 +86,10 @@ bool registerOnGateway() {
     return true;
 }
 
-/* FIXME: descartar a lista toda e criar nova lista com todos os dispositivos recebidos */
 bool getRegisteredScanners() {
+    clearList(knownScanners);
+    numKnownScanners = 0;
+
     serialPrintln("Getting number of registered scanners...");
     readCharacteristic = gateway.characteristic(GATEWAY_READ_NUM_SCANNERS_CHAR_UUID);
 
@@ -138,9 +140,6 @@ bool getRegisteredScanners() {
                 serialPrintln("New scanner received, appending to the end of the list");
                 append(knownScanners, addressBytes);
                 numKnownScanners++;
-            } else {
-                serialPrintln("Scanner already known, continuing...");
-                free(addressBytes);
             }
         }
     }
@@ -378,6 +377,26 @@ void loop() {
     }
 }
 
+byte* serializedBuffer;
+
+int createAndInitializeSerializedBuffer(int buffSize) {
+    int result = 0;
+    serializedBuffer = (byte*) malloc(buffSize * sizeof(byte));
+
+    serializedBuffer[result] = (byte) SCANNER_ID;
+    result += 1;
+
+    // Add Mac Size
+    serializedBuffer[result] = (byte) MAC_ADDRESS_SIZE_BYTES;
+    result += 1;
+
+    // Add Num RSSI per device
+    serializedBuffer[result] = (byte) MAX_SCANS;
+    result += 1;
+
+    return result;
+}
+
 bool writeDevicesOnGateway() {
     readCharacteristic = gateway.characteristic(GATEWAY_WRITE_CHAR_UUID);
 
@@ -411,52 +430,46 @@ bool writeDevicesOnGateway() {
     }
     numRemainDevices -= currBuffNumDevices;
 
-    byte buffer[currBuffSize];
+    //byte buffer[currBuffSize];
     int bufferPos = 0;
     // Add Scanner ID
-    buffer[bufferPos] = (byte) SCANNER_ID;
-    bufferPos++;
+    bufferPos += createAndInitializeSerializedBuffer(currBuffSize);
 
-    // Add Mac Size
-    buffer[bufferPos] = (byte) MAC_ADDRESS_SIZE_BYTES;
-    bufferPos++;
-
-    // Add Num RSSI per device
-    buffer[bufferPos] = (byte) MAX_SCANS;
-    bufferPos++;
-
+    bool lastBatch = false;
     for (JsonPair scannedDevice : rssisJsonObject) {
         /* Add current device to buffer */
         JsonArray rssis = bleScans[scannedDevice.key().c_str()];
         const char* macAddress = scannedDevice.key().c_str();
 
-        if (serializeDevice(macAddress, rssis, buffer, bufferPos)) {
+        if (serializeDevice(macAddress, rssis, serializedBuffer, bufferPos)) {
             bufferPos += BUFFER_DEVICE_SIZE_BYTES;
         }
 
+        lastBatch = bufferPos + 1 == currBuffSize;
         /* Check if we've reached the maximum bufferSize */
-        if (bufferPos + 1 == currBuffSize) {
-            buffer[bufferPos] = (byte) '$';
+        if (lastBatch) {
+            serializedBuffer[bufferPos] = (byte) '$';
             bufferPos++;
         }
         if (bufferPos == currBuffSize) {
             serialPrintln("Writing value to characteristic...");
             /* if so, we write the buffer on the characteristic */
-            readCharacteristic.writeValue(buffer, bufferPos);
+            readCharacteristic.writeValue(serializedBuffer, bufferPos);
+            free(serializedBuffer);
 
-            currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-            currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 1;
-            if (currBuffNumDevices == numRemainDevices) {
-                currBuffSize += 1;
+            // restart buffer
+            if (!lastBatch) {
+                currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
+                currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 3;
+                if (currBuffNumDevices == numRemainDevices) {
+                    currBuffSize += 1;
+                }
+                numRemainDevices -= currBuffNumDevices;
+
+                bufferPos = 0;
+                bufferPos += createAndInitializeSerializedBuffer(currBuffSize);
             }
-            numRemainDevices -= currBuffNumDevices;
-
-            byte buffer[currBuffSize];
-            bufferPos = 0;
-            buffer[bufferPos] = (byte) SCANNER_ID;
-            bufferPos++;
         }
-        // rssis.clear(); LIMPAR A MEMÓRIA
     }
     
     rssisJsonObject.clear();
