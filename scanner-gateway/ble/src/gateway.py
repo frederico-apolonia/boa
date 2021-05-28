@@ -6,6 +6,7 @@ import dbus
 import logging
 
 from decouple import config
+import kafka
 from pymongo import MongoClient
 from kafka import KafkaConsumer
 
@@ -24,7 +25,8 @@ def load_environment_variables():
     result = {}
     result['mongo_user'] = config('MONGO_USER')
     result['mongo_password'] = config('MONGO_PASSWORD')
-    result['kafka_url'] = [config('KAFKA_URL')]
+    kafka_url = config('KAFKA_URL', default=None)
+    result['kafka_url'] = [kafka_url] if kafka_url else kafka_url
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
     print(result['collecting_mode'])
@@ -90,8 +92,9 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
-        Timer(900, start_process_data).start() # TODO: 900s numa variavel
-        _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
+        Timer(1800, start_process_data).start() # TODO: 900s numa variavel
+        if env_variables['kafka_url']:
+            _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
         app.run()
     except KeyboardInterrupt:
         app.quit()

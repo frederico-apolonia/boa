@@ -51,5 +51,5 @@ def deserialize_mac(buffer):
 def last_batch(buffer, mac_size, num_rssi):
     buffer_len = len(buffer)
     # subtract scanner ID from buffer
-    buffer_len -= 1
+    buffer_len -= 3
     return buffer_len % (mac_size + (RSSI_SIZE_BYTES * num_rssi)) != 0

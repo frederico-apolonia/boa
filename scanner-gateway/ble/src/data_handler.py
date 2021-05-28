@@ -36,9 +36,11 @@ class ProcessReceivedData(Thread):
         self.mongo_registered_scanners = self.mongo_client['gateway']['registered_scanners']
 
         # init kafka connection
-        self.kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
-                                            value_serializer=lambda v: json.dumps(v).encode('utf-8'))
-
+        if kafka_server:
+            self.kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
+                                                value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+        else:
+            self.kafka_producer = None
         # init salt variable
         self.salt = None
         self.salt_lock = Lock()
@@ -79,15 +81,20 @@ class ProcessReceivedData(Thread):
             
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
+            logging.debug(f'{scanner_devices}')
 
-            if self.training_mode and self.filter_macs:
-                # if we only want to register some MAC addresses, filter them
-                filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_macs} 
-                scanner_devices['devices'] = filtered_devices
-            elif self.submit_data:
-                with self.salt_lock:
-                    devices = anonymize_devices(scanner_devices.pop('devices'), self.salt)
-                scanner_devices['devices'] = devices
+            if 'devices' in scanner_devices:
+                if self.training_mode and self.filter_macs:
+                    print(scanner_devices)
+                    # if we only want to register some MAC addresses, filter them
+                    filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_macs} 
+                    scanner_devices['devices'] = filtered_devices
+                elif self.submit_data:
+                    with self.salt_lock:
+                        devices = anonymize_devices(scanner_devices.pop('devices'), self.salt)
+                    scanner_devices['devices'] = devices
+            else:
+                scanner_devices['devices'] = {}
 
             # check if this is not the first message from this scanner
             previous_scanner_devices = self.scanners_devices.pop(scanner_id, None)
@@ -130,13 +137,14 @@ class ProcessReceivedData(Thread):
         self.scanner_queue.put_nowait(scanner_buffer)
 
     def publish_devices_to_kafka(self, scanner_devices):
-        scanner_devices['metadata'] = {
-            'registered_scanners': list(self.get_registered_scanners_ids_set()),
-            'gateway_id': self.gateway_id
-        }
+        if self.kafka_producer:
+            scanner_devices['metadata'] = {
+                'registered_scanners': list(self.get_registered_scanners_ids_set()),
+                'gateway_id': self.gateway_id
+            }
 
-        devices = json.loads(json.dumps(scanner_devices, default=str))
-        self.kafka_producer.send(KAFKA_TOPIC, devices)
+            devices = json.loads(json.dumps(scanner_devices, default=str))
+            self.kafka_producer.send(KAFKA_TOPIC, devices)
 
     def stop(self):
         logging.info('Shutting down ProcessData thread')
@@ -177,16 +185,26 @@ class ProcessReceivedData(Thread):
             else:
                 devices = entry['devices']
 
-            entry = {
+            scanner_entry = {
                 'devices': devices,
                 'timestamp': entry['timestamp'],
                 'scanner_id': entry['scanner_id'],
+                'metadata': {
+                    'registered_scanners': list(self.get_registered_scanners_ids_set()),
+                    'gateway_id': self.gateway_id
+                }
             }
             filtered_entries += [entry]
 
-            self.publish_devices_to_kafka(entry)
+            if self.training_mode:
+                scanner_entry['location'] = entry['location']
 
-        self.mongo_submit_col.insert_many(filtered_entries)
+            self.publish_devices_to_kafka(scanner_entry)
+
+        try:
+            self.mongo_submit_col.insert_many(filtered_entries)
+        except:
+            print("error while pushing devices to mongo.")
         #self.mongo_pre_process_col.drop()
 
         self.submit_data = True
