@@ -59,11 +59,9 @@ def mongo_collecting_start_stop(mongo_url, process_data_thread):
 
 def update_time_values(timestamp_char, cycle_elapsed_time_char):
     elapsed_time = 0
-    timestamp_char.begin()
     while(True):
         if elapsed_time == 60:
             elapsed_time = 0
-            timestamp_char.update_time()
         else: elapsed_time += 1
         cycle_elapsed_time_char.update_elapsed_time(elapsed_time)
         sleep(1)
