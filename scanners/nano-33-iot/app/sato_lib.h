@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+const short SCANNER_ID = 1;
+
 const int NUM_SCANNER_PHASES_BEFORE_REBOOT = 10;
 const int MAX_SCANS = 10;
 const int SCAN_TIME = 1000; //ms
@@ -11,13 +13,13 @@ const int BUFFER_DEVICE_SIZE_BYTES = 16;
 const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
 const int NULL_RSSI = 255;
+const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 1200000;
+const int FULL_CYCLE_TIME = 60000; // seconds
 
-// Timeout variables to handle board getting stuck on main loop
-const int LOOP_STUCK_TIMER_INTERVAL_MS = 64000;
-const int LOOP_STUCK_TIMER_DURATION_MS = 60000;
-
-// Timeout variables to handle board getting stuck on scan loop
-const int SCAN_STUCK_TIMER_INTERVAL_MS = 21500;
+const int SCANNING_TIME = SCAN_TIME * 2 * MAX_SCANS ;
+const int TIMESLOT_TIME = 9500;
+const int SCAN_PREPARE_TIME = SCANNING_TIME + TIMESLOT_TIME * 4;
+const int SCANNER_TIMESLOT_BEGIN = SCANNING_TIME + (SCANNER_ID * TIMESLOT_TIME) - TIMESLOT_TIME;
 
 /* Convert string seperated by sep to bytes and save it on buffer.
  * Offset indicates the first position of buffer to write the data; 
