@@ -31,7 +31,6 @@ def load_environment_variables():
     result['kafka_url'] = [kafka_url] if kafka_url else kafka_url
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
-    print(result['collecting_mode'])
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):

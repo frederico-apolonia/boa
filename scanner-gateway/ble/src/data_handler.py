@@ -13,10 +13,11 @@ from deserialize import deserialize
 from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, gateway_id, mongo_url, kafka_server, training_mode=False):
+    def __init__(self, gateway_id, mongo_url, kafka_server, training_mode=False, ble_mode=False):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
         self.gateway_id = gateway_id
+        self.ble_mode = ble_mode
 
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
@@ -76,9 +77,11 @@ class ProcessReceivedData(Thread):
             if self.training_mode and not self.training_accept_data:
                 continue
 
-            logging.info(f"Processing scanner values")
-            scanner_devices = deserialize(scanner_buffer)
-            
+            if self.ble_mode:
+                logging.info(f"Processing scanner values")
+                scanner_devices = deserialize(scanner_buffer)
+            else:
+                scanner_devices = scanner_buffer
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
             logging.debug(f'{scanner_devices}')
