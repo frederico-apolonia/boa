@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 const short SCANNER_ID = 1;
+const char SCANNER_MAC_ADDRESS[] = "MACADDRESS"; // REPLACE WITH CORRECT MAC ADDRESS
 
 const int NUM_SCANNER_PHASES_BEFORE_REBOOT = 10;
 const int MAX_SCANS = 10;

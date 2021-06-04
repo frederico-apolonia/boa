@@ -57,6 +57,12 @@ bool valueInLinkedList(node_t *node, byte* addr) {
 }
 
 void append(node_t* node, byte* value) {
+    if (node == NULL) {
+        node = (node_t *) malloc(sizeof(node_t));
+        node->value = value;
+        node->next = NULL;
+        return;
+    }
     node_t* current = node;
     while(current->next != NULL) {
         current = current->next;
