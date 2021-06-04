@@ -48,21 +48,31 @@ cycle_management.start()
 @app.route('/scanner/add_data', methods=['POST'])
 def scanner_add_data():
     request_data = request.get_json()
-    request_data['last_batch'] = True
-    request_data['timestamp'] = time.time()
-    request_data['scanner_id'] = int(request_data['scanner_id'])
-    process_data_thread.add_scanner_buffer(request_data)
+    scanner_id = int(request_data.pop('scanner_id'))
+    timestamp = time.time()
+
+    scanner_data = {
+        'scanner_id': scanner_id,
+        'devices': request_data,
+        'timestamp': timestamp,
+        'last_batch': True,
+    }
+    process_data_thread.add_scanner_buffer(scanner_data)
     return ('', 204) # no content
 
 @app.route('/scanner/register', methods=['POST'])
 def scanner_register():
-    request_data = request.get_json()
     timestamp = datetime.datetime.fromtimestamp(time.time())
-    request_data['scanner_id'] = int(request_data['scanner_id'])
-    request_data['timestamp'] = timestamp
-    
-    mongo_registered_scanners.insert_one(request_data)
+    request_data = request.get_json()
+    scanner_mac = list(request_data.keys())[0]
+    scanner_id = int(request_data[scanner_mac])
 
+    mongo_dict = {
+        'scanner_mac': scanner_mac,
+        'scanner_id': scanner_id,
+        'timestamp': timestamp
+    }
+    mongo_registered_scanners.insert_one(mongo_dict)
     return ('', 204)
 
 @app.route('/scanner/get_registered_scanners', methods=['GET'])
@@ -70,13 +80,9 @@ def get_registered_scanners():
     # ir buscar todos os unique scanner_id do mongo_registered_scanners
     result = []
     scanner_ids = mongo_registered_scanners.distinct('scanner_id')
-    print(len(scanner_ids))
     for scanner_id in scanner_ids:
-        print(scanner_id)
         query_result = mongo_registered_scanners.find_one({"scanner_id": scanner_id})
-        print(query_result)
-        result += [{query_result['scanner_id']: query_result['scanner_mac']}]
-
+        result += [query_result['scanner_mac']]
     return (json.dumps(result), 200)
 
 ## Functions related with scanner time slots
