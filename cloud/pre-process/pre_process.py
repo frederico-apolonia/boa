@@ -70,6 +70,12 @@ def merge_data_data_between_time(timestamp_begin, raw_col, merge_data_col):
                 if device not in result['devices']:
                     result['devices'][device] = [[-255] * NUM_SCANNERS] * NUM_RSSI_SAMPLES
                 
+                if len(device_rssi_values) != NUM_RSSI_SAMPLES:
+                    # convert received values to negative, if needed
+                    device_rssi_values = [-x if x > 0 else x for x in device_rssi_values]
+                    # add the remaining values as -255
+                    device_rssi_values.extend([-255] * (NUM_RSSI_SAMPLES - len(device_rssi_values)))
+                
                 for i in range(0, NUM_RSSI_SAMPLES):
                     device_rssis = result['devices'][device][i]
                     device_rssis[array_pos] = device_rssi_values[i]
