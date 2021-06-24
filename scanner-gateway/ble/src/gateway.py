@@ -33,7 +33,7 @@ def load_environment_variables():
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
-    salt_topic = 'GATEWAY_SALT'
+    salt_topic = 'sato.boa.salt.raw'
     consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
     for msg in consumer:
         process_data_thread.set_salt_value(msg.value)

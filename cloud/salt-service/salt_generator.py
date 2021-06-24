@@ -8,7 +8,7 @@ from decouple import config
 from kafka import KafkaProducer
 from pymongo import MongoClient
 
-KAFKA_TOPIC = 'GATEWAY_SALT'
+KAFKA_TOPIC = 'sato.boa.salt.raw'
 SALT_REFRESH_TIME = 600
 
 def gen_new_salt(curr_salt):
