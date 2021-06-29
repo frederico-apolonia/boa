@@ -36,7 +36,6 @@ RUN set -e -x ; \
 
 USER $USERNAME
 
-COPY salt-service/.env .env
 COPY salt-service/salt_generator.py salt_generator.py
 
 CMD [ "python3", "salt_generator.py" ]

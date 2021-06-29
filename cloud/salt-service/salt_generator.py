@@ -1,17 +1,15 @@
-from threading import Timer
+from os import environ
 from urllib.parse import quote_plus
-import time
 import datetime
+import time
 
 from bcrypt import gensalt
-from decouple import config
 from kafka import KafkaProducer
 from pymongo import MongoClient
 
-KAFKA_TOPIC = 'sato.boa.salt.raw'
-SALT_REFRESH_TIME = 600
+DEFAULT_SALT_REFRESH_TIME = 600
 
-def gen_new_salt(curr_salt):
+def gen_new_salt(curr_salt, generate_salts):
     if not curr_salt and not generate_salts:
         curr_salt = gensalt()
     elif generate_salts:
@@ -19,45 +17,72 @@ def gen_new_salt(curr_salt):
 
     return curr_salt
 
-def publish_new_salt():
+def publish_new_salt(kafka_producer, kafka_topic, generate_salts, mongo_salt_col, salt_refresh_time):
     curr_salt = None
 
     while True:
-        curr_salt = gen_new_salt(curr_salt)
+        curr_salt = gen_new_salt(curr_salt, generate_salts)
         
-        kafka_producer.send(KAFKA_TOPIC, curr_salt)
+        kafka_producer.send(kafka_topic, curr_salt)
 
-        timestamp_begin = datetime.datetime.fromtimestamp(time.time())
-        timestamp_end = datetime.datetime.fromtimestamp(time.time() + SALT_REFRESH_TIME)
-        salt_col = mongo_client['gateway']['salts']
-        salt_col.insert_one({
-            'begin': timestamp_begin,
-            'end': timestamp_end,
-            'salt': curr_salt,
-        })
+        if mongo_salt_col is not None:
+            timestamp_begin = datetime.datetime.fromtimestamp(time.time())
+            timestamp_end = datetime.datetime.fromtimestamp(time.time() + salt_refresh_time)
+            mongo_salt_col.insert_one({
+                'begin': timestamp_begin,
+                'end': timestamp_end,
+                'salt': curr_salt,
+            })
 
-        time.sleep(SALT_REFRESH_TIME)
+        time.sleep(salt_refresh_time)
 
 def load_environment_variables():
-    global kafka_producer
-    kafka_producer = KafkaProducer(bootstrap_servers=[config('KAFKA_URL')])
+    result = {}
 
-    global mongo_client
-    mongo_url = config('MONGO_URL')
-    mongo_user = config('MONGO_USER')
-    mongo_pass = config('MONGO_PASS')
+    if 'KAFKA_URL' in environ:
+        result['KAFKA_URL'] = environ['KAFKA_URL']
+    else:
+        return None
 
-    mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(mongo_user), quote_plus(mongo_pass), quote_plus(mongo_url))
-    mongo_client = MongoClient(mongo_uri)
+    if 'KAFKA_TOPIC' in environ:
+        result['KAFKA_TOPIC'] = environ['KAFKA_TOPIC']
+    else:
+        return None
 
-    global generate_salts
-    generate_salts = config('GENERATE_SALTS', cast=bool)
+    if 'SALT_REFRESH_TIME' in environ:
+        result['SALT_REFRESH_TIME'] = int(environ['SALT_REFRESH_TIME'])
+    else:
+        result['SALT_REFRESH_TIME'] = DEFAULT_SALT_REFRESH_TIME
+
+    if 'GENERATE_SALTS' in environ:
+        result['GENERATE_SALTS'] = bool(environ.get('GENERATE_SALTS', 'False'))
+    
+    if 'MONGO_URL' in environ:
+        result['MONGO_URL'] = environ['MONGO_URL']
+        result['MONGO_USER'] = environ['MONGO_USER']
+        result['MONGO_PASS'] = environ['MONGO_PASS']
+
+    return result
 
 def main():
-    load_environment_variables()
+    environment_variables = load_environment_variables()
 
-    publish_new_salt()
+    if environment_variables is not None:
+        generate_salts = environment_variables['GENERATE_SALTS']
+        kafka_producer = KafkaProducer(bootstrap_servers=[environment_variables['KAFKA_URL']])
+        kafka_topic = environment_variables['KAFKA_TOPIC']
+        salt_refresh_time = environment_variables['SALT_REFRESH_TIME']
 
+        mongo_salt_col = None
+        if 'MONGO_URL' in environment_variables:
+            mongo_uri = "mongodb://%s:%s@%s" % (quote_plus(environment_variables['MONGO_USER']), quote_plus(environment_variables['MONGO_PASS']), quote_plus(environment_variables['MONGO_URL']))
+            mongo_client = MongoClient(mongo_uri)
+            mongo_salt_col = mongo_client['gateway']['salts']
+            
+
+        publish_new_salt(kafka_producer, kafka_topic, generate_salts, mongo_salt_col, salt_refresh_time)
+    else:
+        print('Environment variables are not correctly set.')
 
 if __name__ == '__main__':
     exit(main())
