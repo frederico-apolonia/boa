@@ -22,7 +22,7 @@ def publish_new_salt(kafka_producer, kafka_topic, generate_salts, mongo_salt_col
 
     while True:
         curr_salt = gen_new_salt(curr_salt, generate_salts)
-        
+        print(f'Publishing: {curr_salt} to {kafka_topic}')
         kafka_producer.send(kafka_topic, curr_salt)
 
         if mongo_salt_col is not None:
@@ -55,7 +55,9 @@ def load_environment_variables():
         result['SALT_REFRESH_TIME'] = DEFAULT_SALT_REFRESH_TIME
 
     if 'GENERATE_SALTS' in environ:
-        result['GENERATE_SALTS'] = bool(environ.get('GENERATE_SALTS', 'False'))
+        result['GENERATE_SALTS'] = bool(environ.get('GENERATE_SALTS', ''))
+    else:
+        result['GENERATE_SALTS'] = False
     
     if 'MONGO_URL' in environ:
         result['MONGO_URL'] = environ['MONGO_URL']
