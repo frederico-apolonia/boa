@@ -28,18 +28,16 @@ class KafkaGatewayConsumer(Thread):
 
     def run(self):
         self.running = True
-        with open('data_collection.txt', 'w') as out_f:
-            for gateway_message in self.kafka_consumer:
-                if not self.running:
-                    break
-                # create new scanner data object
-                scanner_values = json.loads(gateway_message.value)
-                out_f.write(f'{scanner_values},\n')
-    
-                scanner_data = scanner_data_from_dict(scanner_values)
-                # add scanner data object to "to process" list
-                with self.scanners_entries_lock:
-                    self.scanners_data_entries.append(scanner_data)
+        for gateway_message in self.kafka_consumer:
+            if not self.running:
+                break
+            # create new scanner data object
+            scanner_values = json.loads(gateway_message.value)
+
+            scanner_data = scanner_data_from_dict(scanner_values)
+            # add scanner data object to "to process" list
+            with self.scanners_entries_lock:
+                self.scanners_data_entries.append(scanner_data)
 
     def stop(self):
         self.running = False
