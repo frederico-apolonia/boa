@@ -141,3 +141,7 @@ cython_debug/
 .vscode/
 
 *.csv
+
+# Docker compose files
+docker-compose.yml
+docker-compose.yaml

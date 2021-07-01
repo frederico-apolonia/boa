@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+    salt:
+        image: 'sato-boa-salt-service:latest'
+        environment:
+            KAFKA_URL: KAFKA_URL
+            KAFKA_TOPIC: KAFKA_TOPIC
+
+    location-assessment:
+        image: 'sato-boa-location-assessment-service:latest'
+        environment: 
+            KAFKA_URL: KAFKA_URL
+            KAFKA_TOPIC: KAFKA_TOPIC 

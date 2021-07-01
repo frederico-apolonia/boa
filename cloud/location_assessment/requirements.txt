@@ -1,0 +1,6 @@
+pymongo
+kafka-python
+python-decouple
+h5py < 3.0.0
+tensorflow
+pandas
