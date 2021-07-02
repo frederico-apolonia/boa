@@ -15,9 +15,12 @@ from kafka_gateway_consumer import KafkaGatewayConsumer
 
 def load_environment_variables():
     result = {}
-    if 'KAFKA_TOPIC' in environ:
-        result['kafka_topic'] = environ['KAFKA_TOPIC']
+    if 'KAFKA_GATEWAY_TOPIC' in environ:
+        result['kafka_gateway_topic'] = environ['KAFKA_GATEWAY_TOPIC']
     
+    if 'KAFKA_DEVICE_LOCATIONS_TOPIC' in environ:
+        result['kafka_device_locations_topic'] = environ['KAFKA_DEVICE_LOCATIONS_TOPIC']
+
     if 'KAFKA_URL' in environ:
         result['kafka_url'] = environ['KAFKA_URL']
     
@@ -27,13 +30,14 @@ def load_environment_variables():
 def main():
     environment_variables = load_environment_variables()
     kafka_url = environment_variables['kafka_url']
-    kafka_topic = environment_variables['kafka_topic']
+    kafka_gateway_topic = environment_variables['kafka_gateway_topic']
+    kafka_device_locations_topic = environment_variables['kafka_device_locations_topic']
 
     scanners_data_entries = []
     scanners_entries_lock = Lock()
 
-    kafka_gateway_consumer = KafkaGatewayConsumer(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_topic)
-    scanner_data_processor = ScannerDataProcessor(scanners_data_entries, scanners_entries_lock)
+    kafka_gateway_consumer = KafkaGatewayConsumer(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_gateway_topic)
+    scanner_data_processor = ScannerDataProcessor(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_device_locations_topic)
 
     kafka_gateway_consumer.start()
     scanner_data_processor.start()

@@ -10,4 +10,5 @@ services:
         image: 'sato-boa-location-assessment-service:latest'
         environment: 
             KAFKA_URL: KAFKA_URL
-            KAFKA_TOPIC: KAFKA_TOPIC 
+            KAFKA_GATEWAY_TOPIC: KAFKA_TOPIC
+            KAFKA_DEVICE_LOCATIONS_TOPIC: KAFKA_TOPIC

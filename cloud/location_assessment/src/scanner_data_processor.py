@@ -2,10 +2,13 @@ from datetime import datetime, timedelta
 from threading import Thread
 from time import sleep, time
 import os
-from numpy.lib.function_base import average
+import json
 
+from numpy.lib.function_base import average
 from tensorflow import keras
 import pandas as pd
+from tensorflow.keras import models
+from kafka import KafkaProducer
 
 NUM_SCANNERS = 4
 NUM_RSSI_SAMPLES = 10
@@ -14,7 +17,18 @@ MODELS_PATH = 'src/models/'
 
 class ScannerDataProcessor(Thread):
 
-    def __init__(self, scanners_data_entries, scanners_entries_lock):
+    model_to_index = {
+        'm1': 0, 
+        'm2': 1, 
+        'm3': 2, 
+        'm4': 3, 
+        'm5': 4, 
+        'm6': 5, 
+        'm7': 6, 
+        'm8': 7, 
+    }
+
+    def __init__(self, scanners_data_entries, scanners_entries_lock, kafka_server, kafka_topic):
         super().__init__()
 
         self.scanners_data_entries = scanners_data_entries
@@ -22,9 +36,13 @@ class ScannerDataProcessor(Thread):
         
         self.running = False
         self.models = self.load_location_models()
+        with open('src/models/models.json', 'r') as models_json:
+            models_metadata = json.load(models_json)
+        self.sorted_models_by_error = [x[0] for x in sorted(models_metadata.items(), key=lambda x: x[1]['error'])]
 
-        rssi_vectors_examples = pd.read_csv('src/queries_test.csv')
-        print(rssi_vectors_examples)
+        self.kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
+                                            value_serializer=lambda v: json.dumps(v).encode('utf-8'))
+        self.kafka_topic = kafka_topic
 
     def load_location_models(self):
         models = []
@@ -109,6 +127,20 @@ class ScannerDataProcessor(Thread):
         for i in range(4,8):
             result.append(self.models[i].predict(rssi_dataframe))
 
+        return transpose_device_locations(result)
+
+    def decide_device_locations(self, models_locations):
+        best_3_models = self.sorted_models_by_error[0:3]
+        result = []
+        for device in models_locations:
+            sum_x = 0
+            sum_y = 0
+            sum_z = 0
+            for model in best_3_models:
+                sum_x += device[self.model_to_index[model]][0]
+                sum_y += device[self.model_to_index[model]][1]
+                sum_z += device[self.model_to_index[model]][2]
+            result += [(sum_x/3, sum_y/3, sum_z/3)]
         return result
 
     def run(self):
@@ -125,26 +157,79 @@ class ScannerDataProcessor(Thread):
             if 'devices' not in rssi_vectors_dict or len(rssi_vectors_dict['devices']) == 0:
                 # TODO: need to update rooms and tell them they're all empty
                 continue
-            
-            #print(rssi_vectors_dict)
-            # 2. Para cada dispositivo:
-            #  2.1. Determinar a localização nos 8 modelos
-            #  2.2. Transposiçao dos 8 resultados para um unico plano
-            #  2.3. Passar pelo algoritmo de clustering para determinar qual a posicao que se deve usar
-            #  2.4. Atualizar ocupaçao das salas
 
             rssi_dataframe = rssi_vectors_dict['devices']
             estimate_positions_time_start = time()
-            positions = self.estimate_device_positions(rssi_dataframe)
+            models_locations = self.estimate_device_positions(rssi_dataframe)
             print(f'Finished estimating positions, took {time()-estimate_positions_time_start:.1f} seconds')
 
-            print(positions[0])
+            decide_device_locations = self.decide_device_locations(models_locations)
+            self.kafka_producer.send(self.kafka_topic, json.dumps(decide_device_locations))
 
             sleep(60)
 
     def stop(self):
         self.running = False
 
+
+def transpose_m1_m5_to_m1(point):
+    x = point[0]
+    y = point[1]
+    z = 1
+    return [x, y, z]
+
+def transpose_m2_m6_to_m1(point):
+    distance_to_origin_xx = 7
+    x = point[0]
+    y = point[1]
+    z = 1
+    new_x = distance_to_origin_xx - y
+    new_y = x
+    return [new_x, new_y, z]
+
+def transpose_m3_m7_to_m1(point):
+    distance_to_origin_yy = 7
+    x = point[0]
+    y = point[1]
+    z = 1
+    new_x = y
+    new_y = distance_to_origin_yy - x
+    return [new_x, new_y, z]
+
+def transpose_m4_m8_to_m1(point):
+    distance_to_origin_xx = 7
+    distance_to_origin_yy = 8
+    x = point[0]
+    y = point[1]
+    z = 1
+    new_x = distance_to_origin_xx - x
+    new_y = distance_to_origin_yy - y
+    return [new_x, new_y, z]
+
+def transpose_device_locations(models_locations):
+    # Configuration of Model 1 is considered the "correct" configuration
+    # all models, except 1 and 5 (indexes 0 and 4) need to be adjusted accordingly.
+    transpose_points_dict = {
+        0: transpose_m1_m5_to_m1,
+        1: transpose_m2_m6_to_m1,
+        2: transpose_m3_m7_to_m1,
+        3: transpose_m4_m8_to_m1,
+        4: transpose_m1_m5_to_m1,
+        5: transpose_m2_m6_to_m1,
+        6: transpose_m3_m7_to_m1,
+        7: transpose_m4_m8_to_m1,
+    }
+    num_devices = len(models_locations[0])
+
+    result = []
+    for i in range(0, num_devices):
+        device_results = []
+        for k in range(0, len(transpose_points_dict)):
+            transpose_function = transpose_points_dict[k]
+            device_results.append(transpose_function(models_locations[k][i]))
+        result.append(device_results)
+
+    return result
 
 def join_lists(l1, l2):
     result = [-255] * NUM_SCANNERS
