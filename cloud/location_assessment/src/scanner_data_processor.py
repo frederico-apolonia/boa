@@ -3,6 +3,7 @@ from threading import Thread
 from time import sleep, time
 import os
 import json
+import re
 
 from numpy.lib.function_base import average
 from tensorflow import keras
@@ -36,26 +37,38 @@ class ScannerDataProcessor(Thread):
         
         self.running = False
         self.models = self.load_location_models()
-        with open('src/models/models.json', 'r') as models_json:
-            models_metadata = json.load(models_json)
-        self.sorted_models_by_error = [x[0] for x in sorted(models_metadata.items(), key=lambda x: x[1]['error'])]
 
         self.kafka_producer = KafkaProducer(bootstrap_servers=kafka_server,
                                             value_serializer=lambda v: json.dumps(v).encode('utf-8'))
         self.kafka_topic = kafka_topic
 
+    def len_model_rssi_list(self, model_name):
+        pattern = 'm(\d)-\d-[\d]*-[\d]*'
+        model_number = int(re.match(pattern, model_name).group(1))
+        if model_number < 5: return 4
+        else: return 8
+
     def load_location_models(self):
         models = []
         print('Loading models into memory...')
+        with open('src/models/models.json', 'r') as models_json_file:
+            models_metadata = json.load(models_json_file)
 
         loading_start = time()
-        paths = sorted(os.listdir(MODELS_PATH))
-        print(paths)
+        paths = os.listdir(MODELS_PATH)
         for directory in paths:
             model_path = f'{MODELS_PATH}{directory}'
             if os.path.isdir(f'{MODELS_PATH}{directory}'):
+                model_name = directory
+                error = models_metadata[model_name]
                 model = keras.models.load_model(model_path)
-                models += [model]
+                model_dict = {
+                    'name': model_name,
+                    'error': error,
+                    'model': model,
+                    'input_size': self.len_model_rssi_list(model_name),
+                }
+                models += [model_dict]
         print(f'Models loaded, took {time()-loading_start:.2f} seconds')
         return models
 
@@ -121,26 +134,65 @@ class ScannerDataProcessor(Thread):
     def estimate_device_positions(self, rssi_dataframe):
         rssi_dataframe_scanners = rssi_dataframe.drop(['dist1','dist2','dist3','dist4'], axis=1)
         result = []
-        for i in range(0,4):
-            result.append(self.models[i].predict(rssi_dataframe_scanners))
-        
-        for i in range(4,8):
-            result.append(self.models[i].predict(rssi_dataframe))
+        for model in self.models:
+            if model['input_size'] == 4:
+                model_predicts = model['model'].predict(rssi_dataframe_scanners)
+            else:
+                model_predicts = model['model'].predict(rssi_dataframe)
+            
+            model_result = {
+                'name': model['name'],
+                'error': model['error'],
+                'predicts': model_predicts,
+            }
+
+            result.append(model_result)
 
         return transpose_device_locations(result)
 
+    def get_max_dist(self, models_locations):
+        max_dist = 0
+        for i in range(0, len(models_locations) - 1):
+            k = i + 1
+            dist = abs(models_locations[i]['error'] - models_locations[k]['error'])
+            if dist > max_dist:
+                max_dist = dist
+        return max_dist
+
+    def create_clusters(self, models_locations):
+        if len(models_locations) == 0:
+            return []
+        
+        max_dist = self.get_max_dist(models_locations)
+        index = 0
+        for i in range(0, len(models_locations) - 1):
+            k = i + 1
+            dist = abs(models_locations[i]['error'] - models_locations[k]['error'])
+            if dist >= max_dist:
+                index = i
+                break
+        
+        return self.create_clusters(models_locations[:index]) + [models_locations[index:len(models_locations)]]
+
     def decide_device_locations(self, models_locations):
-        best_3_models = self.sorted_models_by_error[0:3]
+        models_locations = sorted(models_locations, key=lambda x: x['error'])
+
+        clusters = self.create_clusters(models_locations)
+        sorted_clusters = sorted(clusters, key=lambda x: len(x), reverse=True)
+
+        num_devices = len(models_locations[0])
         result = []
-        for device in models_locations:
+        for i in range(0,num_devices):
             sum_x = 0
             sum_y = 0
             sum_z = 0
-            for model in best_3_models:
-                sum_x += device[self.model_to_index[model]][0]
-                sum_y += device[self.model_to_index[model]][1]
-                sum_z += device[self.model_to_index[model]][2]
-            result += [(sum_x/3, sum_y/3, sum_z/3)]
+            for model in sorted_clusters[0][0:5]:
+                sum_x += model['predicts'][i][0]
+                sum_y += model['predicts'][i][1]
+                sum_z += model['predicts'][i][2]
+
+            result.append([sum_x/5, sum_y/5, sum_z/5])
+
         return result
 
     def run(self):
@@ -150,7 +202,6 @@ class ScannerDataProcessor(Thread):
         
         timestamp_begin = None
         
-        # TODO: ver estes sleeps, têm de ser retirados
         while self.running:
             timestamp_begin, rssi_vectors_dict = self.create_rssi_vectors(timestamp_begin)
 
@@ -206,28 +257,37 @@ def transpose_m4_m8_to_m1(point):
     new_y = distance_to_origin_yy - y
     return [new_x, new_y, z]
 
-def transpose_device_locations(models_locations):
+def transpose_device_locations(models_predictions):
+    pattern = '(m\d)-\d-[\d]*-[\d]*'
     # Configuration of Model 1 is considered the "correct" configuration
     # all models, except 1 and 5 (indexes 0 and 4) need to be adjusted accordingly.
     transpose_points_dict = {
-        0: transpose_m1_m5_to_m1,
-        1: transpose_m2_m6_to_m1,
-        2: transpose_m3_m7_to_m1,
-        3: transpose_m4_m8_to_m1,
-        4: transpose_m1_m5_to_m1,
-        5: transpose_m2_m6_to_m1,
-        6: transpose_m3_m7_to_m1,
-        7: transpose_m4_m8_to_m1,
+        'm1': transpose_m1_m5_to_m1,
+        'm2': transpose_m2_m6_to_m1,
+        'm3': transpose_m3_m7_to_m1,
+        'm4': transpose_m4_m8_to_m1,
+        'm5': transpose_m1_m5_to_m1,
+        'm6': transpose_m2_m6_to_m1,
+        'm7': transpose_m3_m7_to_m1,
+        'm8': transpose_m4_m8_to_m1,
     }
-    num_devices = len(models_locations[0])
 
     result = []
-    for i in range(0, num_devices):
-        device_results = []
-        for k in range(0, len(transpose_points_dict)):
-            transpose_function = transpose_points_dict[k]
-            device_results.append(transpose_function(models_locations[k][i]))
-        result.append(device_results)
+    for model_predictions in models_predictions:
+        model_results = []
+        model_name = model_predictions['name']
+        model_error = model_predictions['error']
+        transpose_function = transpose_points_dict[re.match(pattern, model_name).group(1)]
+        for prediction in model_predictions['predicts']:
+            model_results.append(transpose_function(prediction))
+        
+        result.append(
+            {
+                'name': model_name,
+                'predicts': model_results,
+                'error': model_error,
+            }
+        )
 
     return result
 
