@@ -1,17 +1,28 @@
+import _thread
 from urllib.parse import quote_plus
 import time
 import datetime
 import json
+import threading
+from threading import Timer
 
 from decouple import config
 from flask import Flask, render_template, request
+from flask.helpers import make_response
 import kafka
 from pymongo import MongoClient
 from cycle_thread import CycleThread
+from kafka import KafkaConsumer
 
 from data_handler import ProcessReceivedData
 
 app = Flask(__name__)
+
+def salt_kafka_consumer(kafka_url, process_data_thread):
+    salt_topic = 'sato.boa.salt.raw'
+    consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
+    for msg in consumer:
+        process_data_thread.set_salt_value(msg.value)
 
 def load_environment_variables():
     result = {}
@@ -22,6 +33,27 @@ def load_environment_variables():
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
     return result
+
+def mongo_collecting_start_stop(mongo_url, process_data_thread):
+    mongo_client = MongoClient(mongo_url)
+    col = mongo_client['collecting']['data']
+    while True:
+        train_command = col.find_one({})
+        if train_command:
+            if train_command['command'] == 'start':
+                filter_macs = train_command['filter_macs']
+                location = train_command['location']
+                process_data_thread.training_start(filter_macs, location)
+                print(f'{filter_macs}, {location}')
+            else:
+                filter_macs = train_command['filter_macs']
+                process_data_thread.training_stop(filter_macs)
+            
+            # remove entry from mongod
+            col.delete_one({'_id': train_command['_id']})
+
+def start_process_data():
+    process_data_thread.start_submiting_data()
 
 env_variables = load_environment_variables()
 
@@ -43,6 +75,15 @@ process_data_thread.start()
 # Cycle management thread
 cycle_management = CycleThread()
 cycle_management.start()
+
+if collecting_mode:
+    mongo_collecting_thread = threading.Thread(target=mongo_collecting_start_stop, args=(mongo_uri, process_data_thread))
+    mongo_collecting_thread.start()
+
+Timer(600, start_process_data).start() # TODO: 900s numa variavel
+
+if env_variables['kafka_url']:
+    _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
 
 ## Functions related with scanner data
 @app.route('/scanner/add_data', methods=['POST'])
@@ -100,7 +141,13 @@ def get_current_time():
 def collecting_stopped():
     if collecting_mode:
         if request.method == 'POST':
-            mongo_collecting_col.insert_one({'command': 'stop'})
+            #request.cookies.get('filter_macs')
+            macs = request.form['mac_address'].split(',')
+            entry = {
+                'filter_macs': macs,
+                'command': 'stop'
+            }
+            mongo_collecting_col.insert_one(entry)
         return render_template('stopped.html')
     else:
         ('Collecting mode not enabled.', 403)
@@ -110,9 +157,9 @@ def collecting_running():
     if collecting_mode:
         filter_macs = request.form['macs'].split(',')
         location = [
-            int(request.form['posx']),
-            int(request.form['posy']),
-            int(request.form['posz']),
+            float(request.form['posx']),
+            float(request.form['posy']),
+            float(request.form['posz']),
         ]
         command = 'start'
         running_entry = {
@@ -121,7 +168,6 @@ def collecting_running():
             'command': command,
         }
         mongo_collecting_col.insert_one(running_entry)
-
-        return render_template('running.html')
+        return render_template('running.html', mac_address=','.join(filter_macs))
     else:
         ('Collecting mode not enabled.', 403)

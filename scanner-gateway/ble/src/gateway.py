@@ -34,7 +34,7 @@ def load_environment_variables():
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
-    salt_topic = 'GATEWAY_SALT'
+    salt_topic = 'sato.boa.salt.raw'
     consumer = KafkaConsumer(salt_topic, bootstrap_servers=kafka_url)
     for msg in consumer:
         process_data_thread.set_salt_value(msg.value)
@@ -105,7 +105,7 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
-        Timer(1800, start_process_data).start() # TODO: 900s numa variavel
+        Timer(600, start_process_data).start() # TODO: 900s numa variavel
         if env_variables['kafka_url']:
             _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
 
