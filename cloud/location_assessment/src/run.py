@@ -23,6 +23,8 @@ def load_environment_variables():
 
     if 'KAFKA_URL' in environ:
         result['kafka_url'] = environ['KAFKA_URL']
+
+    result['test_mode'] = bool(environ.get('TEST_MODE', ''))
     
     return result
 
@@ -32,12 +34,14 @@ def main():
     kafka_url = environment_variables['kafka_url']
     kafka_gateway_topic = environment_variables['kafka_gateway_topic']
     kafka_device_locations_topic = environment_variables['kafka_device_locations_topic']
+    test_mode = environment_variables['test_mode']
+    print(f'RUNNING IN TEST MODE? {test_mode}')
 
     scanners_data_entries = []
     scanners_entries_lock = Lock()
 
-    kafka_gateway_consumer = KafkaGatewayConsumer(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_gateway_topic)
-    scanner_data_processor = ScannerDataProcessor(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_device_locations_topic)
+    kafka_gateway_consumer = KafkaGatewayConsumer(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_gateway_topic, test_mode)
+    scanner_data_processor = ScannerDataProcessor(scanners_data_entries, scanners_entries_lock, kafka_url, kafka_device_locations_topic, test_mode)
 
     kafka_gateway_consumer.start()
     scanner_data_processor.start()

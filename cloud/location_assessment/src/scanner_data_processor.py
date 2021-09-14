@@ -29,12 +29,13 @@ class ScannerDataProcessor(Thread):
         'm8': 7, 
     }
 
-    def __init__(self, scanners_data_entries, scanners_entries_lock, kafka_server, kafka_topic):
+    def __init__(self, scanners_data_entries, scanners_entries_lock, kafka_server, kafka_topic, test_mode):
         super().__init__()
 
         self.scanners_data_entries = scanners_data_entries
         self.scanners_entries_lock = scanners_entries_lock
-        
+        self.test_mode = test_mode
+
         self.running = False
         self.models = self.load_location_models()
 
@@ -60,6 +61,8 @@ class ScannerDataProcessor(Thread):
             model_path = f'{MODELS_PATH}{directory}'
             if os.path.isdir(f'{MODELS_PATH}{directory}'):
                 model_name = directory
+                if 'm8' in model_name or 'm4' in model_name:
+                    continue
                 error = models_metadata[model_name]
                 model = keras.models.load_model(model_path)
                 model_dict = {
@@ -86,50 +89,58 @@ class ScannerDataProcessor(Thread):
             if len(self.scanners_data_entries) == 0:
                 return None, {}
 
-            self.sort_scanners_data_entries_by_timestamp()
-            if timestamp_begin is None:
-                timestamp_begin = self.scanners_data_entries[0].timestamp
+            if not self.test_mode:
+                self.sort_scanners_data_entries_by_timestamp()
+                if timestamp_begin is None:
+                    timestamp_begin = self.scanners_data_entries[0].timestamp
 
-            if timestamp_now - timestamp_begin >= timedelta(seconds=90):
-                scanners_data = self.get_scanners_data_between_timestamps(timestamp_begin, timestamp_begin+minute)
+                if timestamp_now - timestamp_begin >= timedelta(seconds=90):
+                    scanners_data = self.get_scanners_data_between_timestamps(timestamp_begin, timestamp_begin+minute)
+                else:
+                    return None, {}
             else:
-                return None, {}
+                train_rssi_vector = self.scanners_data_entries.pop(0)
 
-        timestamp_end = timestamp_begin + minute
-        result = {
-            'timestamp_begin': timestamp_begin,
-            'timestamp_end': timestamp_end,
-            'devices': {},
-        }
+        if not self.test_mode:
+            timestamp_end = timestamp_begin + minute
+            result = {
+                'timestamp_begin': timestamp_begin,
+                'timestamp_end': timestamp_end,
+                'devices': {},
+            }
 
-        devices = {}
+            devices = {}
+            for scanner in scanners_data:
+                scanner_id = scanner.scanner_id
+                array_pos = scanner_id - 1
+                for device in scanner.devices.keys():
+                    device_rssi_values = scanner.devices[device]
+                    # convert received values to negative, if needed
+                    device_rssi_values = [-x if x > 0 else x for x in device_rssi_values]
+                    if device not in result['devices']:
+                        devices[device] = [-255] * NUM_SCANNERS + [50] * NUM_SCANNERS
 
-        for scanner in scanners_data:
-            scanner_id = scanner.scanner_id
-            array_pos = scanner_id - 1
-            for device in scanner.devices.keys():
-                device_rssi_values = scanner.devices[device]
-                # convert received values to negative, if needed
-                device_rssi_values = [-x if x > 0 else x for x in device_rssi_values]
-                if device not in result['devices']:
-                    devices[device] = [-255] * NUM_SCANNERS + [50] * NUM_SCANNERS
-
-                device_rssi_value = average(device_rssi_values)
+                    device_rssi_value = average(device_rssi_values)
+                    
+                    devices[device][scanner_id-1] = device_rssi_value
+                    devices[device][scanner_id-1+NUM_SCANNERS] = rssi_to_distance(device_rssi_value)
+            result['devices'] = devices_to_dataframe(devices)
+            return timestamp_begin+minute, result
+        
+        else:
+            _id = train_rssi_vector._id
+            rssi_values = train_rssi_vector.rssi_values
+            num_rssi_values = len(rssi_values)
+            for i in range(0, num_rssi_values):
+                rssi_values.append(rssi_to_distance(rssi_values[i]))
                 
-                devices[device][scanner_id-1] = device_rssi_value
-                devices[device][scanner_id-1+NUM_SCANNERS] = rssi_to_distance(device_rssi_value)
+            devices = {'device': rssi_values}
+            result = {
+                '_id': _id,
+                'devices': devices_to_dataframe(devices)
+            }
 
-                # if len(device_rssi_values) != NUM_RSSI_SAMPLES:
-                #     # add the remaining values as -255
-                #     device_rssi_values.extend([-255] * (NUM_RSSI_SAMPLES - len(device_rssi_values)))
-                # 
-                # for i in range(0, NUM_RSSI_SAMPLES):
-                #     device_rssis = result['devices'][device][i]
-                #     device_rssis[array_pos] = device_rssi_values[i]
-
-        result['devices'] = devices_to_dataframe(devices)
-
-        return timestamp_begin+minute, result
+            return None, result
 
     def estimate_device_positions(self, rssi_dataframe):
         rssi_dataframe_scanners = rssi_dataframe.drop(['dist1','dist2','dist3','dist4'], axis=1)
@@ -182,16 +193,17 @@ class ScannerDataProcessor(Thread):
 
         num_devices = len(models_locations[0])
         result = []
-        for i in range(0,num_devices):
+        for i in range(0,1): # FIXME: something is fishy here, idk what is. 
             sum_x = 0
             sum_y = 0
             sum_z = 0
-            for model in sorted_clusters[0][0:5]:
-                sum_x += model['predicts'][i][0]
-                sum_y += model['predicts'][i][1]
-                sum_z += model['predicts'][i][2]
+            for model in sorted_clusters[0]:
+                model_predicts = model['predicts'][i]
+                sum_x += model_predicts[0]
+                sum_y += model_predicts[1]
+                sum_z += model_predicts[2]
 
-            result.append([sum_x/5, sum_y/5, sum_z/5])
+            result.append([sum_x/len(sorted_clusters[0]), sum_y/len(sorted_clusters[0]), sum_z/len(sorted_clusters[0])])
 
         return result
 
@@ -215,9 +227,19 @@ class ScannerDataProcessor(Thread):
             print(f'Finished estimating positions, took {time()-estimate_positions_time_start:.1f} seconds')
 
             decide_device_locations = self.decide_device_locations(models_locations)
-            self.kafka_producer.send(self.kafka_topic, json.dumps(decide_device_locations))
+            if self.test_mode:
+                if rssi_vectors_dict is None:
+                    continue
+                kafka_result_dict = {
+                    '_id': rssi_vectors_dict['_id'],
+                    'positions': decide_device_locations
+                }
+                self.kafka_producer.send(self.kafka_topic, json.dumps(kafka_result_dict))
+            else:
+                self.kafka_producer.send(self.kafka_topic, json.dumps(decide_device_locations))
 
-            sleep(60)
+            if not self.test_mode:
+                sleep(60)
 
     def stop(self):
         self.running = False
@@ -328,5 +350,7 @@ def devices_to_dataframe(devices):
 def rssi_to_distance(rssi):
     rssi_0 = -47.68 # https://journals.sagepub.com/doi/pdf/10.1155/2014/371350 equation 7, rssi when scanner is 1m from beacon
     n = 3 # https://en.wikipedia.org/wiki/Log-distance_path_loss_model#Empirical_coefficient_values_for_indoor_propagation
+    if rssi == -255:
+        return 50
     result = pow(10, (rssi_0 - rssi) / (10 * n))
     return result

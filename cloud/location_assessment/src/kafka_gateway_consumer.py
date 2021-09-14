@@ -12,11 +12,12 @@ from scanner_data import scanner_data_from_dict
 
 class KafkaGatewayConsumer(Thread):
 
-    def __init__(self, scanners_data_entries, scanners_entries_lock, kafka_url, kafka_topic):
+    def __init__(self, scanners_data_entries, scanners_entries_lock, kafka_url, kafka_topic, test_mode):
         super().__init__()
 
         self.scanners_data_entries = scanners_data_entries
         self.scanners_entries_lock = scanners_entries_lock
+        self.test_mode = test_mode
 
         self.kafka_consumer = KafkaConsumer(
             kafka_topic,
@@ -34,7 +35,7 @@ class KafkaGatewayConsumer(Thread):
             # create new scanner data object
             scanner_values = json.loads(gateway_message.value)
 
-            scanner_data = scanner_data_from_dict(scanner_values)
+            scanner_data = scanner_data_from_dict(scanner_values, self.test_mode)
             # add scanner data object to "to process" list
             with self.scanners_entries_lock:
                 self.scanners_data_entries.append(scanner_data)
