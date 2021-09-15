@@ -61,15 +61,13 @@ class ScannerDataProcessor(Thread):
             model_path = f'{MODELS_PATH}{directory}'
             if os.path.isdir(f'{MODELS_PATH}{directory}'):
                 model_name = directory
-                if 'm8' in model_name or 'm4' in model_name:
-                    continue
-                error = models_metadata[model_name]
+                error = models_metadata[model_name]['error']
                 model = keras.models.load_model(model_path)
                 model_dict = {
                     'name': model_name,
                     'error': error,
                     'model': model,
-                    'input_size': self.len_model_rssi_list(model_name),
+                    'input_size': models_metadata[model_name]['input_size'],
                 }
                 models += [model_dict]
         print(f'Models loaded, took {time()-loading_start:.2f} seconds')
@@ -145,10 +143,21 @@ class ScannerDataProcessor(Thread):
     def estimate_device_positions(self, rssi_dataframe):
         rssi_dataframe_scanners = rssi_dataframe.drop(['dist1','dist2','dist3','dist4'], axis=1)
         result = []
+
+        worst_scanner_column = rssi_dataframe_scanners.idxmin(axis=1)[0]
+        triangle_df = rssi_dataframe_scanners.drop([worst_scanner_column], axis=1)
+        worst_distance_column = f"dist{int(worst_scanner_column.split('scanner')[1])}"
+
+        triangle_df_dists = rssi_dataframe.drop([worst_distance_column, worst_scanner_column], axis=1)
         for model in self.models:
-            if model['input_size'] == 4:
+            if model['input_size'] == 3:
+                model_predicts = model['model'].predict(triangle_df)
+            elif model['input_size'] == 6:
+                model_predicts = model['model'].predict(triangle_df_dists)
+            elif model['input_size'] == 4:
                 model_predicts = model['model'].predict(rssi_dataframe_scanners)
-            else:
+            elif model['input_size'] == 8:
+                print(rssi_dataframe)
                 model_predicts = model['model'].predict(rssi_dataframe)
             
             model_result = {
@@ -279,6 +288,18 @@ def transpose_m4_m8_to_m1(point):
     new_y = distance_to_origin_yy - y
     return [new_x, new_y, z]
 
+def transpose_rectangle(point):
+    x = point[0]
+    y = point[1]
+    z = 1
+    return [x, y, z]
+
+def transpose_triangle(point):
+    x = point[0]
+    y = point[1]
+    z = 1
+    return [x, y, z]
+
 def transpose_device_locations(models_predictions):
     pattern = '(m\d)-\d-[\d]*-[\d]*'
     # Configuration of Model 1 is considered the "correct" configuration
@@ -292,6 +313,8 @@ def transpose_device_locations(models_predictions):
         'm6': transpose_m2_m6_to_m1,
         'm7': transpose_m3_m7_to_m1,
         'm8': transpose_m4_m8_to_m1,
+        'ret': transpose_rectangle,
+        'tri': transpose_triangle,
     }
 
     result = []
@@ -299,7 +322,12 @@ def transpose_device_locations(models_predictions):
         model_results = []
         model_name = model_predictions['name']
         model_error = model_predictions['error']
-        transpose_function = transpose_points_dict[re.match(pattern, model_name).group(1)]
+        if 'ret' in model_name:
+            transpose_function = transpose_points_dict['ret']
+        elif 'tgrande' in model_name or 'tpeq' in model_name:
+            transpose_function = transpose_points_dict['tri']
+        else:
+            transpose_function = transpose_points_dict[re.match(pattern, model_name).group(1)]
         for prediction in model_predictions['predicts']:
             model_results.append(transpose_function(prediction))
         

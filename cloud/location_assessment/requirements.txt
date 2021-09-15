@@ -1,6 +1,6 @@
 pymongo
 kafka-python
 python-decouple
-h5py < 3.0.0
-tensorflow
+h5py
+tensorflow==2.6.0
 pandas

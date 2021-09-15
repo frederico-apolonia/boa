@@ -3,12 +3,13 @@ services:
     salt:
         image: 'sato-boa-salt-service:latest'
         environment:
-            KAFKA_URL: KAFKA_URL
-            KAFKA_TOPIC: KAFKA_TOPIC
+            KAFKA_URL: 192.168.1.237:9092
+            KAFKA_TOPIC: sato.boa.salt.raw
 
     location-assessment:
         image: 'sato-boa-location-assessment-service:latest'
         environment: 
-            KAFKA_URL: KAFKA_URL
-            KAFKA_GATEWAY_TOPIC: KAFKA_TOPIC
-            KAFKA_DEVICE_LOCATIONS_TOPIC: KAFKA_TOPIC
+            KAFKA_URL: 192.168.1.237:9092
+            KAFKA_GATEWAY_TOPIC: sato-gateway
+            KAFKA_DEVICE_LOCATIONS_TOPIC: sato.boa.locations.raw
+            TEST_MODE: sim
