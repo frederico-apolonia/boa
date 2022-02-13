@@ -1,11 +1,12 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+const int NUM_SCANNER_PHASES_BEFORE_REBOOT = 10;
 const int MAX_SCANS = 10;
 const int SCAN_TIME = 1000; //ms
 const int TIME_BETWEEN_SCANS = 1000;
 const int MAX_SLEEP_TIME_BETWEEN_SCAN_BURST = 60000;
-const int MAX_PAYLOAD_DEVICES = 15;
+const int MAX_PAYLOAD_DEVICES = 5;
 const int BUFFER_DEVICE_SIZE_BYTES = 16;
 const int MAC_ADDRESS_SIZE_BYTES = 6;
 const int MAC_ADDRESS_BASE = 16;
@@ -38,3 +39,5 @@ typedef struct node {
 bool valueInLinkedList(node_t *node, byte* value);
 
 void append(node_t *node, byte* value);
+
+void clearList(node_t *node);

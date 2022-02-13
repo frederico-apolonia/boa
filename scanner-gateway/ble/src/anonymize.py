@@ -2,7 +2,7 @@ from hashlib import sha256
 
 def anonymize(value, salt=None):
     if salt is None:
-        return None
+        return value
     else:
         return sha256(bytes(value, encoding='utf-8') + salt).hexdigest()
 

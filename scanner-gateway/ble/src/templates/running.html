@@ -1,0 +1,12 @@
+<!doctype html>
+<title>SATO GATEWAY DATA COLLECTOR</title>
+<h1>SATO GATEWAY DATA COLLECTOR RUNNING</h1>
+<form action="{{ url_for('stopped') }}" method="post">
+  <input id="submit" type="submit" value="Stop"/>
+</form>
+
+<script>
+  setTimeout(function () {
+    document.getElementById("submit").click();
+  }, 300000);
+</script>

@@ -66,3 +66,14 @@ void append(node_t* node, byte* value) {
     current->next->value = value;
     current->next->next = NULL;
 }
+
+void clearList(node_t *node) {
+    node_t* currentNode = node;
+    node_t* nextNode;
+    while(currentNode != NULL) {
+        nextNode = currentNode->next;
+        free(currentNode->value);
+        free(currentNode);
+        currentNode = nextNode;
+    }
+}
