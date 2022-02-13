@@ -1,24 +1,33 @@
 #include <Arduino.h>
 #include <ArduinoBLE.h>
 #include <ArduinoJson.h>
+#include <WiFiNINA.h>
+#include <SPI.h>
+#include <ArduinoHttpClient.h>
 
 #include "sato_lib.h"
+#include "status.h"
 #include "WDTZero.h"
+#include "gateway_endpoints.h"
+#include "network_secrets.h"
 
 WDTZero watchdog; // Define WDT
-
-const short SCANNER_ID = 2;
 
 const bool DEBUG = true;
 
 const char* GATEWAY_WRITE_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe1";
 
 const char* GATEWAY_REGISTER_SCANNER_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe5";
+const char* GATEWAY_READ_CYCLE_TIMESTAMP_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097ff1";
+const char* GATEWAY_READ_CYCLE_ELAPSED_TIME_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097ff2";
+const char* GATEWAY_READ_CYCLE_TIMESTAMP_LEN_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097ff3";
 const char* GATEWAY_READ_NUM_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe6";
 const char* GATEWAY_READ_SCANNERS_CHAR_UUID = "070106ff-d31e-4828-a39c-ab6bf7097fe7";
 
 #define BLE_BACKOFF_TIME 100
 
+int scannerStatus;
+long startingTime;
 int lastTimerReset = millis();
 int numScans = 1;
 int numRetrieveRegisteredScannersTries = 0;
@@ -28,6 +37,8 @@ bool scanning = true;
 bool deliveredDevicesToGateway = false;
 long scanStart = millis();
 int scanEndDelayDelta = 0;
+byte* serializedBuffer;
+int scannerSleepTime;
 
 int timeBetweenScans = MAX_SLEEP_TIME_BETWEEN_SCAN_BURST - (SCAN_TIME * MAX_SCANS + TIME_BETWEEN_SCANS * MAX_SCANS);
 
@@ -39,14 +50,27 @@ JsonObject rssisJsonObject;
 
 /* Known scanners vars */
 int numKnownScanners = 0;
-node_t* knownScanners;
+node_t* knownScanners = NULL;
 long lastKnownScannersRetrievalInstant;
 
 /* BLE objects */
 BLEDevice gateway;
 BLECharacteristic readCharacteristic;
 
-const int TIME_BETWEEN_SCANNERS_RETRIEVAL = 1200000;
+/*  */
+char* gwTimestampBuffer;
+long long int gwTimestamp;
+int32_t gwElapsedTime;
+
+/* Network */
+String macAddressString;
+WiFiClient wifiClient;
+HttpClient httpClient = HttpClient(wifiClient, SERVER_ADDRESS, SERVER_PORT);
+int wifiStatus;
+String bodyMessage;
+int serverResponse;
+StaticJsonDocument<160> scannerMacAddressesDoc;
+StaticJsonDocument<64> scannerMetadata;
 
 template <class T> void serialPrintln(T value) {
     if (DEBUG) {
@@ -67,131 +91,158 @@ void turnOnBLEScan() {
     }
 }
 
-bool registerOnGateway() {
-    if (!gateway.discoverAttributes()) {
-        serialPrintln("Couldn't discover gateway characteristics.");
-        gateway.disconnect();
+/***** Methods related with WiFiNINA *****/
+int connectToWiFiNetwork() {
+    WiFi.lowPowerMode();
+    return WiFi.begin(ssid, pass);
+}
+
+void disconnectAndShutdownWiFi() {
+    httpClient.stop();
+    WiFi.disconnect();
+    WiFi.end();
+}
+
+bool sendCapturedDevices() {
+    wifiStatus = connectToWiFiNetwork();
+    if (wifiStatus != WL_CONNECTED) {
+        serialPrintln("Couldn't connect to Wifi network...");
         return false;
     }
+    bleScans["scanner_id"] = SCANNER_ID;
+    serializeJson(bleScans, bodyMessage);
+    serialPrintln(bodyMessage);
 
-    BLECharacteristic registerCharacteristic = gateway.characteristic(GATEWAY_REGISTER_SCANNER_CHAR_UUID);
+    httpClient.beginRequest();
+    httpClient.post(ADD_DATA_URL);
+    httpClient.sendHeader("Content-Type", "application/json");
+    httpClient.sendHeader("Content-Length", bodyMessage.length());
+    httpClient.sendHeader("Connection", "keep-alive");
+    httpClient.beginBody();
 
-    if (!registerCharacteristic) {
-        serialPrintln("Device doesn't have register write char!");
-        gateway.disconnect();
+    httpClient.print(bodyMessage);
+    httpClient.endRequest();
+
+    serverResponse = httpClient.responseStatusCode();
+
+    disconnectAndShutdownWiFi();
+    bodyMessage = "";
+    return serverResponse == 204;
+}
+
+/* Json to store data collected from BLE Scanner, supports 64 devices */
+bool registerScanner() {
+    wifiStatus = connectToWiFiNetwork();
+    if (wifiStatus != WL_CONNECTED) {
+        serialPrintln("Couldn't connect to Wifi network...");
         return false;
     }
+    scannerMetadata[SCANNER_MAC_ADDRESS] = SCANNER_ID;
 
-    registerCharacteristic.writeValue(SCANNER_ID);
-    return true;
+    serializeJson(scannerMetadata, bodyMessage);
+    serialPrintln("Serialized JSON");
+    serialPrintln(bodyMessage);
+
+    httpClient.beginRequest();
+    httpClient.post(REGISTER_URL);
+    httpClient.sendHeader("Content-Type", "application/json");
+    httpClient.sendHeader("Content-Length", bodyMessage.length());
+    httpClient.sendHeader("Connection", "keep-alive");
+    httpClient.beginBody();
+    httpClient.print(bodyMessage);
+    httpClient.endRequest();
+
+    serverResponse = httpClient.responseStatusCode();
+
+    disconnectAndShutdownWiFi();
+    scannerMetadata.clear();
+    bodyMessage = "";
+    return serverResponse == 204;
 }
 
 bool getRegisteredScanners() {
-    clearList(knownScanners);
-    numKnownScanners = 0;
-
-    serialPrintln("Getting number of registered scanners...");
-    readCharacteristic = gateway.characteristic(GATEWAY_READ_NUM_SCANNERS_CHAR_UUID);
-
-    if (!readCharacteristic) {
-        serialPrintln("Device doesn't have number registered scanners read char!");
-        gateway.disconnect();
+    wifiStatus = connectToWiFiNetwork();
+    if (wifiStatus != WL_CONNECTED) {
+        serialPrintln("Couldn't connect to Wifi network...");
         return false;
     }
 
-    int32_t numScanners;
-    readCharacteristic.readValue(numScanners);
-    serialPrint("Number of registered scanners: ");
-    serialPrintln(numScanners);
+    httpClient.get(GET_REGISTERED_SCANNERS_URL);
+    serverResponse = httpClient.responseStatusCode();
+    serialPrint("Got response: ");
+    serialPrintln(serverResponse);
+    if (serverResponse == 200) {
+        serialPrintln("Got answer with content");
+        // clear previously known scanners
+        clearList(knownScanners);
+        numKnownScanners = 0;
+        bodyMessage = httpClient.responseBody();
+        serialPrintln("Scanner device list:");
+        serialPrintln(bodyMessage);
 
-    byte scannersBuffer[numScanners*MAC_ADDRESS_SIZE_BYTES];
-    readCharacteristic = gateway.characteristic(GATEWAY_READ_SCANNERS_CHAR_UUID);
+        deserializeJson(scannerMacAddressesDoc, bodyMessage);
+        serialPrintln("Deserialized JSON to object");
 
-    if (!readCharacteristic) {
-        serialPrintln("Device doesn't have registered scanners read char!");
-        gateway.disconnect();
-        return false;
+        convertJsonMacToList();
+
+        scannerMacAddressesDoc.clear();
+        bodyMessage = "";
+        lastKnownScannersRetrievalInstant = millis();
     }
-
-    if (numScanners > 0) {
-        int receivingBytes = numScanners * MAC_ADDRESS_SIZE_BYTES;
-        serialPrint("Receiving ");
-        serialPrint(receivingBytes);
-        serialPrintln(" bytes from gateway...");
-
-        readCharacteristic.readValue(scannersBuffer, receivingBytes);
-        
-        /* deserialize received values */
-        byte *addressBytes;
-        for(int i = 0; i < numScanners; i++) {
-            addressBytes = (byte*) malloc(MAC_ADDRESS_SIZE_BYTES * sizeof(byte));
-            for(int k = 0; k < MAC_ADDRESS_SIZE_BYTES; k++) {
-                addressBytes[k] = scannersBuffer[k + MAC_ADDRESS_SIZE_BYTES * i];
-            }
-
-            if (numKnownScanners == 0) {
-                serialPrintln("No known scanners, creating first node");
-                knownScanners = (node_t *) malloc(sizeof(node_t));
-                knownScanners->value = addressBytes;
-                knownScanners->next = NULL;
-
-                numKnownScanners++;
-            } else if (!valueInLinkedList(knownScanners, addressBytes)) {
-                serialPrintln("New scanner received, appending to the end of the list");
-                append(knownScanners, addressBytes);
-                numKnownScanners++;
-            }
-        }
-    }
-    
-    serialPrintln("Successfully received all addresses from gateway.");
-    lastKnownScannersRetrievalInstant = millis();
-    return true;
+    disconnectAndShutdownWiFi();
+    return serverResponse == 200;
 }
 
-/* Scan for a gateway, discovers attributes and return gateway connection if successful */
-bool scanForGateway(int maxScanTime) {
-    long startingTime = millis();
-    serialPrintln("Searching for a gateway");
-    
-    serialPrintln("Activating BLE Scan");
-    turnOnBLEScan();
-    delay(1500);
-    
-    bool found = false;
-
-    serialPrint("Starting scan, got ");
-    serialPrint(maxScanTime);
-    serialPrintln("ms to find and connect to a gateway");
-    while(millis() - startingTime <= maxScanTime && !found) {
-        gateway = BLE.available();
-        if (gateway) {
-            if (gateway.localName().indexOf("SATO-GATEWAY") >= 0) {
-                serialPrintln("Peripheral device is a gateway");
-                BLE.stopScan();
-                if (gateway.connect()) {
-                    serialPrintln("Connected to gateway");
-                    if (gateway.discoverAttributes()) {
-                        serialPrintln("Successfuly discovered gateway attributes");
-                        found = true;
-                        continue;
-                    } else {
-                        serialPrintln("Couldn't discover gateway attributes... disconnecting");
-                        gateway.disconnect();
-                        turnOnBLEScan();
-                    }
-                } else {
-                    serialPrintln("Connection with gateway failed");
-                    turnOnBLEScan();
-                }
-                delay(1000);
-            }
-        }
+void convertJsonMacToList() {
+    serialPrintln("Converting MAC String to bytes");
+    serialPrint("Number of MACs: ");
+    serialPrintln(scannerMacAddressesDoc.size());
+    byte* macAddressBytes;
+    int i = 0;
+    while (i < scannerMacAddressesDoc.size()) {
+        macAddressBytes = (byte*) malloc(MAC_ADDRESS_SIZE_BYTES * sizeof(byte));
+        macAddressString = (const char*) scannerMacAddressesDoc[i];
+        serialPrint("Converting address to bytes: ");
+        serialPrintln(macAddressString);
+        parseBytes(macAddressString.c_str(), ':', macAddressBytes, MAC_ADDRESS_SIZE_BYTES, MAC_ADDRESS_BASE, 0);
+        append(knownScanners, macAddressBytes);
+        numKnownScanners++;
+        i++;
     }
-    serialPrint("End of scanning, got gateway? ");
-    serialPrintln(found);
-    BLE.stopScan();
-    return found;
+}
+
+bool getElapsedTime() {
+    wifiStatus = connectToWiFiNetwork();
+    if (wifiStatus != WL_CONNECTED) {
+        serialPrintln("Couldn't connect to Wifi network...");
+        return false;
+    }
+
+    httpClient.get(CYCLE_CURRENT_TIME_URL);
+    serverResponse = httpClient.responseStatusCode();
+    if (serverResponse == 200) {
+        gwElapsedTime = (int32_t) httpClient.responseBody().toInt();
+    } 
+
+    disconnectAndShutdownWiFi();
+    return serverResponse == 200;
+}
+
+bool getTimestamp() {
+    wifiStatus = connectToWiFiNetwork();
+    if (wifiStatus != WL_CONNECTED) {
+        serialPrintln("Couldn't connect to Wifi network...");
+        return false;
+    }
+
+    httpClient.get(CYCLE_CURRENT_TIME_URL);
+    serverResponse = httpClient.responseStatusCode();
+    if (serverResponse == 200) {
+        gwTimestamp = (int32_t) httpClient.responseBody().toInt();
+    } 
+
+    disconnectAndShutdownWiFi();
+    return serverResponse == 200;
 }
 
 void myshutdown() {
@@ -225,34 +276,22 @@ void setup() {
     delay(1000);
 
     bool result = false;
-    
-    while(!result) {
-        watchdog.clear();  // refresh wdt - before it loops
-        result = scanForGateway(10000);
-        //BLEDevice gateway = scanForGateway(10000);
-
-        if(!gateway.connected()) {
-            serialPrintln("No connection with gateway.");
+    while (!result) {
+        serialPrintln("Getting registered scanners from gateway");
+        if (!getRegisteredScanners()) {
             continue;
         }
 
-        serialPrintln("Connected to gateway");
-
-        result = getRegisteredScanners() || result;
-        if (!result) {
-            serialPrintln("Failed to get registered scanners!");
-            gateway.disconnect();
+        serialPrintln("Registering scanner on gateway");
+        if (!registerScanner()) {
             continue;
         }
 
-        result = registerOnGateway() || result;
-        if (!result) {
-            serialPrintln("Failed to register gateway!");
-            gateway.disconnect();
+        serialPrintln("Getting elapsed cycle time from gateway");
+        if (!getElapsedTime()) {
             continue;
         }
-
-        gateway.disconnect();
+        result = true;
     }
     serialPrintln("Retrieved scanners from gateway and registered!");
 }
@@ -298,193 +337,62 @@ void scanBLEDevices(int timeLimitMs, int maxArraySize) {
 void loop() {
     currentTime = millis();
     watchdog.clear();
-    if (scanning) {
+
+    scannerStatus = getScannerStatus(currentTime, startingTime);
+    switch (scannerStatus) {
+    case SCANNING:
+        serialPrintln("Scanner Status: SCANNING");
         if (numScans <= MAX_SCANS) {
-            if (currentTime - lastScanInstant >= TIME_BETWEEN_SCANS) {
-                serialPrintln("Scanning for devices...");
-                scanBLEDevices(SCAN_TIME, numScans);
-                lastScanInstant = millis();
-                numScans++;
-                serialPrintln("Scanning ended");
-            }
-        } else {
-            serialPrintln("Leaving scanning mode.");
-            serialPrint("Scan took (ms) ");
-            serialPrintln(millis() - scanStart);
-            scanning = false;
-            deliveredDevicesToGateway = false;
+            serialPrintln("Scanning for devices...");
+            scanBLEDevices(SCAN_TIME, numScans);
+            delay(1000);
+            numScans += 1;
         }
-    } else {
+        break;
+    
+    case SENDING_DEVICES:
+        serialPrintln("Scanner Status: SENDING_DEVICES");
+        if (!deliveredDevicesToGateway) {
+            deliveredDevicesToGateway = sendCapturedDevices();
+            serialPrintln("Sent all devices to gateway?");
+            serialPrintln(deliveredDevicesToGateway);
+        }
+        break;
+
+    case SCAN_PREPARE:
+        scanEndDelayDelta = 0;
+        numScans = 1;
+        deliveredDevicesToGateway = false;
+        // need to clear previous findings
+        bleScans.clear();
+
+        serialPrintln("L350 Checking if BLE is started ...");
+        while (!BLE.begin()) {
+            serialPrint(". ");
+            delay(100);
+        }
+        serialPrintln("It is.");
+        scannerSleepTime = sleepTime(currentTime, startingTime);
+        serialPrint("Scanner will sleep: ");
+        serialPrintln(scannerSleepTime);
+        delay(scannerSleepTime);
+        break;
+
+    default:
+        serialPrintln("Scanner Status: SLEEP");
+        BLE.end();
         // retrieve registered scanners from gateway
         if (currentTime - lastKnownScannersRetrievalInstant >= TIME_BETWEEN_SCANNERS_RETRIEVAL) {
-            if(scanForGateway(10000) && !gateway.connected()) {
-                serialPrintln("Failed to connect.");
-                return;
-            }
-
-            serialPrintln("Connected to gateway");
-
             if (!getRegisteredScanners()) {
                 serialPrintln("Failed to get registered scanners!");
-                gateway.disconnect();
-                numRetrieveRegisteredScannersTries++;
-                /* If the scanner cannot connect to the gateway after 5 tries to retrieve scanners,
-                    then it should restart. */
                 return;
-            } else {
-                numRetrieveRegisteredScannersTries = 0;
             }
-
-            gateway.disconnect();
+            currentTime = millis();
         }
-
-        if (currentTime - lastScanInstant >= timeBetweenScans) {
-            serialPrintln("Going back to scan mode");
-            // time to go back to scan mode
-            scanning = true;
-            scanStart = millis();
-            scanEndDelayDelta = 0;
-            //scanStuckTimer.restartTimer();
-            numScans = 1;
-            // need to clear previous findings
-            bleScans.clear();
-            
-            serialPrintln("L350 Checking if BLE is started ...");
-            while (!BLE.begin()) {
-                serialPrint(". ");
-                delay(100);
-            }
-        } else {
-            if (!deliveredDevicesToGateway) {
-                serialPrintln("L357 Checking if BLE is started ...");
-                while (!BLE.begin()) {
-                    serialPrint(". ");
-                    delay(100);
-                }
-                // send collected devices to nearest gateway
-                delay(1500);
-                if (scanForGateway(10000)) {
-                    deliveredDevicesToGateway = writeDevicesOnGateway();
-                }
-                /*deliveredDevicesToGateway = findGatewayAndSendDevices(millis(), timeBetweenScans);*/
-                serialPrintln("Sent all devices to gateway?");
-                serialPrintln(deliveredDevicesToGateway);
-            }
-            BLE.end();
-            delay(500 + (scanEndDelayDelta * BLE_BACKOFF_TIME));
-            scanEndDelayDelta += 1;
-        }
+        scannerSleepTime = sleepTime(currentTime, startingTime);
+        serialPrint("Scanner will sleep: ");
+        serialPrintln(scannerSleepTime);
+        delay(scannerSleepTime);
+        break;
     }
-}
-
-byte* serializedBuffer;
-
-int createAndInitializeSerializedBuffer(int buffSize) {
-    int result = 0;
-    serializedBuffer = (byte*) malloc(buffSize * sizeof(byte));
-
-    serializedBuffer[result] = (byte) SCANNER_ID;
-    result += 1;
-
-    // Add Mac Size
-    serializedBuffer[result] = (byte) MAC_ADDRESS_SIZE_BYTES;
-    result += 1;
-
-    // Add Num RSSI per device
-    serializedBuffer[result] = (byte) MAX_SCANS;
-    result += 1;
-
-    return result;
-}
-
-bool writeDevicesOnGateway() {
-    readCharacteristic = gateway.characteristic(GATEWAY_WRITE_CHAR_UUID);
-
-    if (!readCharacteristic) {
-        serialPrintln("Device doesn't have write char!");
-        gateway.disconnect();
-        return false;
-    }
-
-    /* ############
-     * Send devices to gateway
-     * ############ */
-    serialPrintln("Preparing to send devices to gateway.");
-    rssisJsonObject = bleScans.as<JsonObject>();
-    int numDevices = rssisJsonObject.size();
-    serialPrint("Got ");
-    serialPrint(numDevices);
-    serialPrintln(" devices to send to gateway.");
-    int numRemainDevices = numDevices;
-
-    /*
-     * SCANNER sends to GATEWAY the following:
-     * [SCANNER_ID (1 BYTE) ; MAC_SIZE (1 BYTE) ; NUM_RSSI (1 BYTE) [MAC (MAC_SIZE BYTES); RSSI (NUM_RSSI * SIZE_RSSI BYTES)]] # 243 max
-     */
-    int currBuffNumDevices = getCurrBufferNumDevices(numRemainDevices);
-    // SCANNER_ID (1) + MAC_SIZE (1) + DEVICES
-    int currBuffSize = 1 + 1 + 1 + getCurrBufferSize(currBuffNumDevices);
-    // IF it is the last batch, 1 BYTE for LAST_DEVICE_CHAR # 244 max
-    if (currBuffNumDevices == numRemainDevices) {
-        currBuffSize += 1;
-    }
-    numRemainDevices -= currBuffNumDevices;
-
-    //byte buffer[currBuffSize];
-    int bufferPos = 0;
-    // Add Scanner ID
-    bufferPos += createAndInitializeSerializedBuffer(currBuffSize);
-
-    bool lastBatch = false;
-    for (JsonPair scannedDevice : rssisJsonObject) {
-        /* Add current device to buffer */
-        JsonArray rssis = bleScans[scannedDevice.key().c_str()];
-        const char* macAddress = scannedDevice.key().c_str();
-
-        if (serializeDevice(macAddress, rssis, serializedBuffer, bufferPos)) {
-            bufferPos += BUFFER_DEVICE_SIZE_BYTES;
-        }
-
-        lastBatch = bufferPos + 1 == currBuffSize;
-        /* Check if we've reached the maximum bufferSize */
-        if (lastBatch) {
-            serializedBuffer[bufferPos] = (byte) '$';
-            bufferPos++;
-        }
-        if (bufferPos == currBuffSize) {
-            serialPrintln("Writing value to characteristic...");
-            /* if so, we write the buffer on the characteristic */
-            readCharacteristic.writeValue(serializedBuffer, bufferPos);
-            free(serializedBuffer);
-
-            // restart buffer
-            if (!lastBatch) {
-                currBuffNumDevices = min(numRemainDevices, MAX_PAYLOAD_DEVICES);
-                currBuffSize = (currBuffNumDevices * BUFFER_DEVICE_SIZE_BYTES) + 3;
-                if (currBuffNumDevices == numRemainDevices) {
-                    currBuffSize += 1;
-                }
-                numRemainDevices -= currBuffNumDevices;
-
-                bufferPos = 0;
-                bufferPos += createAndInitializeSerializedBuffer(currBuffSize);
-            }
-        }
-    }
-    
-    rssisJsonObject.clear();
-    gateway.disconnect();
-    return true;
-}
-
-int getCurrBufferNumDevices(int numRemainingDevices) {
-    return min(numRemainingDevices, MAX_PAYLOAD_DEVICES);
-}
-
-int getCurrBufferSize(int numDevices) {
-    return numDevices * BUFFER_DEVICE_SIZE_BYTES;
-}
-
-int getTotalDeviceBufferSize() {
-    return rssisJsonObject.size() * BUFFER_DEVICE_SIZE_BYTES;
 }

@@ -1,4 +1,5 @@
 import _thread
+from time import sleep
 from threading import Timer
 import threading
 from urllib.parse import quote_plus
@@ -14,6 +15,7 @@ from ble_server import Application
 from ble_services.scanner_registration_service import GatewayKnownScannersService
 from ble_services.receiver_service import GatewayReceiverService
 from ble_services.gateway_advertiser import GatewayAdvertisement
+from ble_services.time_service import TimeService
 from data_handler import ProcessReceivedData
 from variables import LOG_PATH
 
@@ -29,7 +31,6 @@ def load_environment_variables():
     result['kafka_url'] = [kafka_url] if kafka_url else kafka_url
     result['gateway_id'] = config('GATEWAY_ID', cast=int)
     result['collecting_mode'] = config('COLLECTING_MODE', default=False, cast=bool)
-    print(result['collecting_mode'])
     return result
 
 def salt_kafka_consumer(kafka_url, process_data_thread):
@@ -55,6 +56,15 @@ def mongo_collecting_start_stop(mongo_url, process_data_thread):
             # remove entry from mongod
             col.delete_one({'_id': train_command['_id']})
 
+def update_time_values(timestamp_char, cycle_elapsed_time_char):
+    elapsed_time = 0
+    while(True):
+        if elapsed_time == 60:
+            elapsed_time = 0
+        else: elapsed_time += 1
+        cycle_elapsed_time_char.update_elapsed_time(elapsed_time)
+        sleep(1)
+
 def main():
     # initialize logging
     logging.basicConfig(filename=LOG_PATH, level=logging.INFO,
@@ -72,16 +82,19 @@ def main():
     process_data_thread = ProcessReceivedData(gateway_id, mongo_uri, kafka_server, filter_macs)
     process_data_thread.start()
 
-    if env_variables['collecting_mode']:
-        mongo_collecting_thread = threading.Thread(target=mongo_collecting_start_stop, args=(mongo_uri, process_data_thread))
-        mongo_collecting_thread.start()
-
     logging.debug('Starting dbus Application')
     app = Application()
+
     logging.info('Adding Gateway Receiver service')
     app.add_service(GatewayReceiverService(index=0, process_data_thread=process_data_thread))
+
     logging.info('Adding Gateaway Known Scanners service')
     app.add_service(GatewayKnownScannersService(index=1, mongo_url=mongo_uri))
+
+    logging.info('Adding Gateway Time service')
+    time_service = TimeService(index=2)
+    app.add_service(time_service)
+
     logging.debug('Registering the dbus Application')
     app.register()
 
@@ -92,9 +105,16 @@ def main():
 
     try:
         logging.info('Application started. Gateway can start receiving requests from scanners')
-        Timer(1800, start_process_data).start() # TODO: 900s numa variavel
+        Timer(600, start_process_data).start() # TODO: 900s numa variavel
         if env_variables['kafka_url']:
             _thread.start_new_thread(salt_kafka_consumer, (env_variables['kafka_url'], process_data_thread))
+
+        if env_variables['collecting_mode']:
+            mongo_collecting_thread = threading.Thread(target=mongo_collecting_start_stop, args=(mongo_uri, process_data_thread))
+            mongo_collecting_thread.start()
+        
+        _thread.start_new_thread(update_time_values, (time_service.timestamp_char, time_service.elapsed_time_char))
+        
         app.run()
     except KeyboardInterrupt:
         app.quit()

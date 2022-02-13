@@ -13,10 +13,11 @@ from deserialize import deserialize
 from variables import KAFKA_TOPIC
 
 class ProcessReceivedData(Thread):
-    def __init__(self, gateway_id, mongo_url, kafka_server, training_mode=False):
+    def __init__(self, gateway_id, mongo_url, kafka_server, training_mode=False, ble_mode=False):
         Thread.__init__(self)
         logging.info('Starting ProcessReceivedData thread')
         self.gateway_id = gateway_id
+        self.ble_mode = ble_mode
 
         self.scanner_queue = Queue(maxsize=0)
         self.scanners_devices = {}
@@ -25,8 +26,9 @@ class ProcessReceivedData(Thread):
 
         # Training mode variables
         self.training_mode = training_mode
+        print(f'Gateway is in training mode? {self.training_mode}')
         self.training_accept_data = False
-        self.filter_macs = None
+        self.filter_macs = {}
         self.training_location = None
 
         # init pymongo connection and save the collection access
@@ -47,22 +49,28 @@ class ProcessReceivedData(Thread):
 
     def training_start(self, filter_macs, training_location):
         self.training_accept_data = True
-        self.filter_macs = filter_macs
-        self.training_location = training_location
+        for mac in filter_macs:
+            self.filter_macs[mac] = training_location
 
-    def training_stop(self):
-        self.training_accept_data = False
-        self.filter_macs = None
-        self.training_location = None
+    def training_stop(self, filter_macs):
+        self.filter_macs.pop(','.join(filter_macs))
+        for mac in filter_macs:
+            try:
+                self.filter_macs.pop(mac)
+            except:
+                pass 
+        self.training_accept_data = len(self.filter_macs) == 0
 
     def set_salt_value(self, salt_value):
         def set_salt_value_thread(salt_value):
+            print('Setting new salt value')
             logging.info('Setting new salt value')
             while not self.scanner_queue.qsize() == 0: continue
             
             with self.salt_lock:
                 self.salt = salt_value
                 logging.debug(f'New salt value: {self.salt}')
+                print(f'New salt value: {self.salt}')
 
         _thread.start_new_thread(set_salt_value_thread, (salt_value,))
 
@@ -76,16 +84,17 @@ class ProcessReceivedData(Thread):
             if self.training_mode and not self.training_accept_data:
                 continue
 
-            logging.info(f"Processing scanner values")
-            scanner_devices = deserialize(scanner_buffer)
-            
+            if self.ble_mode:
+                logging.info(f"Processing scanner values")
+                scanner_devices = deserialize(scanner_buffer)
+            else:
+                scanner_devices = scanner_buffer
             scanner_id = scanner_devices.pop('scanner_id')
             logging.debug(f'Scanner_id: {scanner_id}')
             logging.debug(f'{scanner_devices}')
 
             if 'devices' in scanner_devices:
-                if self.training_mode and self.filter_macs:
-                    print(scanner_devices)
+                if self.training_mode:
                     # if we only want to register some MAC addresses, filter them
                     filtered_devices = {mac: v for mac, v in scanner_devices.pop('devices').items() if mac in self.filter_macs} 
                     scanner_devices['devices'] = filtered_devices
@@ -116,19 +125,29 @@ class ProcessReceivedData(Thread):
                 scanner_devices['scanner_id'] = scanner_id
 
                 logging.info(f'Sending batch from scanner to mongo {scanner_id} lastly received at {timestamp} with {len(scanner_devices["devices"])}')
-                if self.training_mode and self.training_location:
+                if self.training_mode:
+                    print(self.filter_macs)
                     logging.info(f'TRAINING_MODE: Adding location {self.training_location} to data')
-                    scanner_devices['location'] = {
-                        'x': self.training_location[0],
-                        'y': self.training_location[1],
-                        'z': self.training_location[2],
-                    }
+                    for device in scanner_devices['devices']:
+                        result = {
+                            'timestamp': timestamp,
+                            'scanner_id': scanner_id,
+                            'devices': {device: scanner_devices['devices'][device]},
+                        }
+                        result['location'] = {
+                            'x': self.filter_macs[device][0],
+                            'y': self.filter_macs[device][1],
+                            'z': self.filter_macs[device][2]
+                        }
+                        print(result)
+                        self.mongo_pre_process_col.insert_one(result)
 
                 if self.submit_data:
                     self.mongo_submit_col.insert_one(scanner_devices)
                     self.publish_devices_to_kafka(scanner_devices)
                 else:
-                    self.mongo_pre_process_col.insert_one(scanner_devices)
+                    if not self.training_mode:
+                        self.mongo_pre_process_col.insert_one(scanner_devices)
             else:
                 self.scanners_devices[scanner_id] = scanner_devices
     
@@ -145,6 +164,7 @@ class ProcessReceivedData(Thread):
 
             devices = json.loads(json.dumps(scanner_devices, default=str))
             self.kafka_producer.send(KAFKA_TOPIC, devices)
+            print(f'Published to kafka:\n{devices}')
 
     def stop(self):
         logging.info('Shutting down ProcessData thread')
