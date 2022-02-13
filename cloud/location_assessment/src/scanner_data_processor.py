@@ -202,7 +202,7 @@ class ScannerDataProcessor(Thread):
 
         num_devices = len(models_locations[0])
         result = []
-        for i in range(0,1): # FIXME: something is fishy here, idk what is. 
+        for i in range(0,num_devices): 
             sum_x = 0
             sum_y = 0
             sum_z = 0
